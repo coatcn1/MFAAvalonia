@@ -83,8 +83,31 @@
         <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding PlayfieldTimeoutMs}" Minimum="50" Maximum="10000" />
       </Grid>
       <Button Content="保存修改" Command="{Binding SaveCommand}" HorizontalAlignment="Left" />
+      <TextBlock Text="生命保护（仅正式演奏与挑战演出）" FontSize="16" FontWeight="DemiBold" Margin="0,6,0,0" />
+      <StackPanel Orientation="Horizontal" Spacing="10">
+        <CheckBox Content="启用生命保护" IsChecked="{Binding LifeSafetyEnabled}" VerticalAlignment="Center" />
+        <TextBlock Text="生命低于" VerticalAlignment="Center" />
+        <NumericUpDown Value="{Binding LifeExitThresholdPercent}" Minimum="1" Maximum="99" Width="90" />
+        <TextBlock Text="% 时释放触控并暂停" VerticalAlignment="Center" />
+        <Button Content="保存生命保护" Command="{Binding SaveRuntimeOptionsCommand}" />
+      </StackPanel>
       <TextBlock Text="校准记录" FontSize="16" FontWeight="DemiBold" />
       <TextBlock Text="{Binding SelectedProfile.CalibrationRecordsText}" TextWrapping="Wrap" />
+      <TextBlock Text="调试与结果目录" FontSize="16" FontWeight="DemiBold" Margin="0,6,0,0" />
+      <ItemsControl ItemsSource="{Binding ArtifactLocations}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="settings:ArtifactLocationItem">
+            <Grid ColumnDefinitions="170,*,70,155,70,70" ColumnSpacing="8" Margin="0,3">
+              <TextBlock Grid.Column="0" Text="{Binding Label}" VerticalAlignment="Center" />
+              <TextBlock Grid.Column="1" Text="{Binding Path}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip.Tip="{Binding Path}" />
+              <TextBlock Grid.Column="2" Text="{Binding ExistsText}" VerticalAlignment="Center" />
+              <TextBlock Grid.Column="3" Text="{Binding LastUpdated}" VerticalAlignment="Center" />
+              <Button Grid.Column="4" Content="复制" Command="{Binding $parent[ItemsControl].((settings:PerformanceProfileSettingsUserControlModel)DataContext).CopyPathCommand}" CommandParameter="{Binding}" />
+              <Button Grid.Column="5" Content="打开" Command="{Binding $parent[ItemsControl].((settings:PerformanceProfileSettingsUserControlModel)DataContext).OpenDirectoryCommand}" CommandParameter="{Binding}" />
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
       <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" Opacity="0.8" />
     </StackPanel>
   </suki:GlassCard>
