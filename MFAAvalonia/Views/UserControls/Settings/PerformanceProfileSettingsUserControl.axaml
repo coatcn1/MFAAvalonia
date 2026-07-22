@@ -1,0 +1,48 @@
+<UserControl x:Class="MFAAvalonia.Views.UserControls.Settings.PerformanceProfileSettingsUserControl"
+             x:DataType="settings:PerformanceProfileSettingsUserControlModel"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:settings="clr-namespace:MFAAvalonia.ViewModels.UsersControls.Settings"
+             xmlns:suki="https://github.com/kikipoulet/SukiUI">
+  <suki:GlassCard Margin="0,15,0,0" Padding="20">
+    <StackPanel Spacing="12">
+      <TextBlock Text="实时演奏 Profile" FontSize="20" FontWeight="DemiBold" />
+      <TextBlock Text="高难度 Profile 可兼容较低主难度；Special 始终独立。" Opacity="0.75" />
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="任务难度" VerticalAlignment="Center" />
+        <ComboBox ItemsSource="{Binding Difficulties}" SelectedItem="{Binding Difficulty}" Width="130" />
+        <Button Content="刷新" Command="{Binding RefreshCommand}" />
+        <Button Content="自动选择" Command="{Binding UseAutomaticCommand}" />
+        <Button Content="钉选当前" Command="{Binding PinCommand}" />
+      </StackPanel>
+      <TextBlock Text="{Binding SelectionText}" TextWrapping="Wrap" FontWeight="DemiBold" />
+      <DataGrid ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" AutoGenerateColumns="False"
+                IsReadOnly="True" Height="230" GridLinesVisibility="Horizontal">
+        <DataGrid.Columns>
+          <DataGridTextColumn Header="文件名" Binding="{Binding Filename}" Width="2*" />
+          <DataGridTextColumn Header="校准难度" Binding="{Binding Difficulty}" />
+          <DataGridTextColumn Header="验收" Binding="{Binding AcceptedText}" />
+          <DataGridTextColumn Header="环境" Binding="{Binding EnvironmentMatchText}" />
+          <DataGridTextColumn Header="创建时间" Binding="{Binding CreatedAt}" Width="*" />
+          <DataGridTextColumn Header="验收时间" Binding="{Binding AcceptedAt}" Width="*" />
+          <DataGridTextColumn Header="修改时间" Binding="{Binding ModifiedAt}" Width="*" />
+        </DataGrid.Columns>
+      </DataGrid>
+      <TextBlock Text="{Binding SelectedProfile.EnvironmentText}" TextWrapping="Wrap" />
+      <Grid ColumnDefinitions="Auto,110,20,Auto,110" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="目标 FPS (15–240)" VerticalAlignment="Center" />
+        <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding TargetFps}" Minimum="15" Maximum="240" />
+        <TextBlock Grid.Row="0" Grid.Column="3" Text="时序偏移 ms (-250–250)" VerticalAlignment="Center" />
+        <NumericUpDown Grid.Row="0" Grid.Column="4" Value="{Binding TimingOffsetMs}" Minimum="-250" Maximum="250" />
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="帧超时 ms (50–5000)" VerticalAlignment="Center" />
+        <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding FrameTimeoutMs}" Minimum="50" Maximum="5000" />
+        <TextBlock Grid.Row="1" Grid.Column="3" Text="演奏区超时 ms (≤10000)" VerticalAlignment="Center" />
+        <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding PlayfieldTimeoutMs}" Minimum="50" Maximum="10000" />
+      </Grid>
+      <Button Content="保存修改" Command="{Binding SaveCommand}" HorizontalAlignment="Left" />
+      <TextBlock Text="校准记录" FontSize="16" FontWeight="DemiBold" />
+      <TextBlock Text="{Binding SelectedProfile.CalibrationRecordsText}" TextWrapping="Wrap" />
+      <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" Opacity="0.8" />
+    </StackPanel>
+  </suki:GlassCard>
+</UserControl>
