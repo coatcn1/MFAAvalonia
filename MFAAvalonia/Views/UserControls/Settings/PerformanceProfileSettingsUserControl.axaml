@@ -20,13 +20,55 @@
                 IsReadOnly="True" Height="230" FontSize="14" RowHeight="32"
                 GridLinesVisibility="Horizontal">
         <DataGrid.Columns>
-          <DataGridTextColumn Header="文件名" Binding="{Binding Filename}" Width="2.6*" />
-          <DataGridTextColumn Header="校准难度" Binding="{Binding Difficulty}" />
-          <DataGridTextColumn Header="验收" Binding="{Binding AcceptedText}" />
-          <DataGridTextColumn Header="环境" Binding="{Binding EnvironmentMatchText}" />
-          <DataGridTextColumn Header="创建时间" Binding="{Binding CreatedAt}" Width="*" />
-          <DataGridTextColumn Header="验收时间" Binding="{Binding AcceptedAt}" Width="*" />
-          <DataGridTextColumn Header="修改时间" Binding="{Binding ModifiedAt}" Width="*" />
+          <DataGridTemplateColumn Header="文件名" Width="2.6*">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                <TextBlock Text="{Binding Filename}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTemplateColumn Header="校准难度">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                <TextBlock Text="{Binding Difficulty}" FontSize="13" VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTemplateColumn Header="验收">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                <TextBlock Text="{Binding AcceptedText}" FontSize="13" VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTemplateColumn Header="环境">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                <TextBlock Text="{Binding EnvironmentMatchText}" FontSize="13" VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTemplateColumn Header="创建时间" Width="*">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                <TextBlock Text="{Binding CreatedAt}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTemplateColumn Header="验收时间" Width="*">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                <TextBlock Text="{Binding AcceptedAt}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTemplateColumn Header="修改时间" Width="*">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                <TextBlock Text="{Binding ModifiedAt}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
         </DataGrid.Columns>
       </DataGrid>
       <TextBlock Text="{Binding SelectedProfile.EnvironmentText}" TextWrapping="Wrap" />
