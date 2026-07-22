@@ -17,9 +17,10 @@
       </StackPanel>
       <TextBlock Text="{Binding SelectionText}" TextWrapping="Wrap" FontWeight="DemiBold" />
       <DataGrid ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" AutoGenerateColumns="False"
-                IsReadOnly="True" Height="230" GridLinesVisibility="Horizontal">
+                IsReadOnly="True" Height="230" FontSize="14" RowHeight="32"
+                GridLinesVisibility="Horizontal">
         <DataGrid.Columns>
-          <DataGridTextColumn Header="文件名" Binding="{Binding Filename}" Width="2*" />
+          <DataGridTextColumn Header="文件名" Binding="{Binding Filename}" Width="2.6*" />
           <DataGridTextColumn Header="校准难度" Binding="{Binding Difficulty}" />
           <DataGridTextColumn Header="验收" Binding="{Binding AcceptedText}" />
           <DataGridTextColumn Header="环境" Binding="{Binding EnvironmentMatchText}" />
