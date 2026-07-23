@@ -33,6 +33,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private int _playfieldTimeoutMs = 1500;
     [ObservableProperty] private bool _lifeSafetyEnabled = true;
     [ObservableProperty] private int _lifeExitThresholdPercent = 20;
+    [ObservableProperty] private bool _rehearsalIgnoreLifeSafety = true;
 
     partial void OnDifficultyChanged(string value) => _ = RefreshAsync();
 
@@ -62,6 +63,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
             LifeSafetyEnabled = runtime?.Value<bool?>("life_safety_enabled") ?? true;
             LifeExitThresholdPercent = Math.Clamp(
                 (runtime?.Value<int?>("life_exit_threshold") ?? 200) / 10, 1, 99);
+            RehearsalIgnoreLifeSafety =
+                runtime?.Value<bool?>("rehearsal_ignore_life_safety") ?? true;
             ArtifactLocations.Clear();
             foreach (var item in await ProfileManagerClient.LoadArtifactLocationsAsync())
                 ArtifactLocations.Add(item);
@@ -91,13 +94,16 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                 ["runtime_options"] = new JObject
                 {
                     ["life_safety_enabled"] = LifeSafetyEnabled,
-                    ["life_exit_threshold"] = LifeExitThresholdPercent * 10
+                    ["life_exit_threshold"] = LifeExitThresholdPercent * 10,
+                    ["rehearsal_ignore_life_safety"] = RehearsalIgnoreLifeSafety
                 }
             });
         });
         if (succeeded)
         {
-            StatusText = $"生命保护已保存：{(LifeSafetyEnabled ? "开启" : "关闭")}，阈值 {LifeExitThresholdPercent}%";
+            StatusText =
+                $"生命保护已保存：{(LifeSafetyEnabled ? "开启" : "关闭")}，阈值 {LifeExitThresholdPercent}%；" +
+                $"排练忽略生命：{(RehearsalIgnoreLifeSafety ? "开启" : "关闭")}";
             await RefreshAsync();
         }
     }
@@ -304,7 +310,14 @@ internal static class ProfileManagerClient
         };
         foreach (var arg in config["child_args"]?.Values<string>() ?? []) startInfo.ArgumentList.Add(arg);
         var environment = (JObject?)config["environment"];
-        if (request.Value<string>("operation") == "list" && environment != null) request["environment"] = environment.DeepClone();
+        if (request.Value<string>("operation") == "list" && environment != null)
+        {
+            var effectiveEnvironment = (JObject)environment.DeepClone();
+            var difficulty = request.Value<string>("difficulty");
+            if (difficulty is "Expert" or "Special")
+                effectiveEnvironment["note_speed"] = 5.0;
+            request["environment"] = effectiveEnvironment;
+        }
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 Profile 管理器");
         await process.StandardInput.WriteAsync(request.ToString(Formatting.None));
         process.StandardInput.Close();
