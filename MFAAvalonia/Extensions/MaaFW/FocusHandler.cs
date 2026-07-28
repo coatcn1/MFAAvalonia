@@ -221,14 +221,14 @@ public class FocusHandler
                 case "log":
                     _viewModel.AddMarkdown(TaskQueueView.ConvertCustomMarkup(displayText));
                     break;
-                case "toast":
-                    DispatcherHelper.RunOnMainThread(() =>
-                        ToastHelper.CreateToastByType(
-                                Avalonia.Controls.Notifications.NotificationType.Information,
-                                LangKeys.Tip.ToLocalization(),
-                                CreateMarkdownContent(displayText, ToastMarkdownMaxHeight))
-                            .Queue());
-                    break;
+               case "toast":
+                   DispatcherHelper.RunOnMainThread(() =>
+                       ToastHelper.CreateToastByType(
+                               Avalonia.Controls.Notifications.NotificationType.Information,
+                               LangKeys.Tip.ToLocalization(),
+                                displayText)
+                           .Queue());
+                   break;
                 case "notification":
                     DispatcherHelper.PostOnMainThread(() =>
                     {
