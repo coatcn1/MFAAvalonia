@@ -171,7 +171,9 @@ public static class VersionChecker
         {
             AddResourceUpdateTask(config.AutoUpdateMFA);
         }
-        else if (config.CheckVersion && !GetResourceVersion().Contains("debug", StringComparison.OrdinalIgnoreCase))
+        else if (config.CheckVersion
+                 && !GetResourceVersion().Contains("debug", StringComparison.OrdinalIgnoreCase)
+                 && SupportsSelectedResourceUpdateSource())
         {
             AddResourceCheckTask();
         }
@@ -190,6 +192,16 @@ public static class VersionChecker
     }
 
     public static void CheckCDKAsync() => TaskManager.RunTaskAsync(() => CheckForCDK(Instances.VersionUpdateSettingsUserControlModel.DownloadSourceIndex == 0), name: "查询CDK剩余时间");
+
+    private static bool SupportsSelectedResourceUpdateSource()
+    {
+        var usesGithub = Instances.VersionUpdateSettingsUserControlModel.DownloadSourceIndex == 0;
+        if (usesGithub || !string.IsNullOrWhiteSpace(GetResourceID()))
+            return true;
+
+        LoggerHelper.Info("跳过启动资源版本检查：当前资源未声明 RID，不支持 Mirror 更新源。");
+        return false;
+    }
     public static void CheckMFAVersionAsync() => TaskManager.RunTaskAsync(async () => await CheckForMFAUpdatesAsync(Instances.VersionUpdateSettingsUserControlModel.DownloadSourceIndex == 0), name: "检测MFA版本");
     public static void CheckResourceVersionAsync() => TaskManager.RunTaskAsync(async () => await CheckForResourceUpdatesAsync(Instances.VersionUpdateSettingsUserControlModel.DownloadSourceIndex == 0), name: "检测资源版本");
     public static void UpdateResourceAsync(string
