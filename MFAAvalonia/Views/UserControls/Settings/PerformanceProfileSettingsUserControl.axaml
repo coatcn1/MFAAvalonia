@@ -53,6 +53,13 @@
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="流速" Width="90">
+                  <DataGridTemplateColumn.CellTemplate>
+                    <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                      <TextBlock Text="{Binding NoteSpeedText}" FontSize="13" VerticalAlignment="Center" />
+                    </DataTemplate>
+                  </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="创建时间" Width="*">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
@@ -79,17 +86,70 @@
             <TextBlock Text="{Binding SelectedProfile.EnvironmentText}" TextWrapping="Wrap" />
             <Grid ColumnDefinitions="Auto,110,20,Auto,110" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
               <TextBlock Grid.Row="0" Grid.Column="0" Text="目标 FPS (15–240)" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding TargetFps}" Minimum="15" Maximum="240" />
+              <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding TargetFps, Mode=TwoWay}" Minimum="15" Maximum="240" />
               <TextBlock Grid.Row="0" Grid.Column="3" Text="时序偏移 ms (-250–250)" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="0" Grid.Column="4" Value="{Binding TimingOffsetMs}" Minimum="-250" Maximum="250" />
+              <NumericUpDown Grid.Row="0" Grid.Column="4" Value="{Binding TimingOffsetMs, Mode=TwoWay}" Minimum="-250" Maximum="250" />
               <TextBlock Grid.Row="1" Grid.Column="0" Text="帧超时 ms (50–5000)" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding FrameTimeoutMs}" Minimum="50" Maximum="5000" />
+              <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding FrameTimeoutMs, Mode=TwoWay}" Minimum="50" Maximum="5000" />
               <TextBlock Grid.Row="1" Grid.Column="3" Text="演奏区超时 ms (≤10000)" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding PlayfieldTimeoutMs}" Minimum="50" Maximum="10000" />
+              <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding PlayfieldTimeoutMs, Mode=TwoWay}" Minimum="50" Maximum="10000" />
             </Grid>
-            <Button Content="保存修改" Command="{Binding SaveCommand}" HorizontalAlignment="Left" />
+            <TextBlock Text="修改后自动保存；修改已验收 Profile 时会先确认并撤销验收。"
+                       TextWrapping="Wrap" Opacity="0.75" />
             <TextBlock Text="校准记录" FontSize="16" FontWeight="DemiBold" />
             <TextBlock Text="{Binding SelectedProfile.CalibrationRecordsText}" TextWrapping="Wrap" />
+          </StackPanel>
+        </TabItem>
+
+        <TabItem Header="校准流速">
+          <StackPanel Spacing="14" Margin="0,12,0,0">
+            <TextBlock Text="每难度校准流速" FontSize="18" FontWeight="DemiBold" />
+            <TextBlock Text="每个 Profile 固定一种流速；四首校准歌曲期间不会自动改变。开演前会读取游戏内实际值，不一致时自动修正并复核。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <Grid ColumnDefinitions="Auto,110,24,Auto,110" RowDefinitions="Auto,Auto,Auto"
+                  ColumnSpacing="8" RowSpacing="10">
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="Easy" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding EasyCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="0" Grid.Column="3" Text="Normal" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="0" Grid.Column="4" Value="{Binding NormalCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="Hard" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding HardCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="1" Grid.Column="3" Text="Expert" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding ExpertCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="2" Grid.Column="0" Text="Special" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding SpecialCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+            </Grid>
+            <TextBlock Text="修改后自动保存。" Opacity="0.75" />
+          </StackPanel>
+        </TabItem>
+
+        <TabItem Header="演出特效">
+          <StackPanel Spacing="14" Margin="0,12,0,0">
+            <TextBlock Text="游戏内演出特效" FontSize="18" FontWeight="DemiBold" />
+            <TextBlock Text="任务从主页启动时会进入“选项”，设置并读回判定辅助效果和 TAP EFFECT；任何点击未生效都会阻止开演。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding GameEffectSettingsEnabled, Mode=TwoWay}" />
+              <TextBlock Text="开演前自动设置并验证游戏特效" VerticalAlignment="Center" />
+            </DockPanel>
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding JudgementAssistEffect, Mode=TwoWay}" />
+              <TextBlock Text="开启判定辅助效果（整条轨道亮光）" VerticalAlignment="Center" />
+            </DockPanel>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="TAP EFFECT" VerticalAlignment="Center" />
+              <NumericUpDown Value="{Binding TapEffect, Mode=TwoWay}" Minimum="1" Maximum="5" Width="90" />
+              <TextBlock Text="可选 1–5；当前实测配置为开启判定辅助 + 1"
+                         VerticalAlignment="Center" Opacity="0.75" />
+            </StackPanel>
+            <TextBlock Text="修改后自动保存。" Opacity="0.75" />
           </StackPanel>
         </TabItem>
 
@@ -98,17 +158,25 @@
             <TextBlock Text="生命保护" FontSize="18" FontWeight="DemiBold" />
             <TextBlock Text="正式演奏、挑战演出和校准的第四首正式验证始终按下方保护规则执行。"
                        TextWrapping="Wrap" Opacity="0.75" />
-            <CheckBox Content="启用生命保护" IsChecked="{Binding LifeSafetyEnabled}" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding LifeSafetyEnabled, Mode=TwoWay}" />
+              <TextBlock Text="启用生命保护" VerticalAlignment="Center" />
+            </DockPanel>
             <StackPanel Orientation="Horizontal" Spacing="10">
               <TextBlock Text="生命低于" VerticalAlignment="Center" />
-              <NumericUpDown Value="{Binding LifeExitThresholdPercent}" Minimum="1" Maximum="99" Width="90" />
+              <NumericUpDown Value="{Binding LifeExitThresholdPercent, Mode=TwoWay}" Minimum="1" Maximum="99" Width="90" />
               <TextBlock Text="% 时释放触控、点击暂停并结束 Maa 当前任务" VerticalAlignment="Center" />
             </StackPanel>
-            <CheckBox Content="排练模式不检测生命（生命归零仍继续到结算）"
-                      IsChecked="{Binding RehearsalIgnoreLifeSafety}" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding RehearsalIgnoreLifeSafety, Mode=TwoWay}" />
+              <TextBlock Text="排练模式不检测生命（生命归零仍继续到结算）"
+                         VerticalAlignment="Center" />
+            </DockPanel>
             <TextBlock Text="关闭后，机器人排练和校准前三首也会应用生命保护；此选项不影响第四首正式验证。"
                        TextWrapping="Wrap" Opacity="0.75" />
-            <Button Content="保存生命保护" Command="{Binding SaveRuntimeOptionsCommand}" HorizontalAlignment="Left" />
+            <TextBlock Text="修改后自动保存。" Opacity="0.75" />
           </StackPanel>
         </TabItem>
 
