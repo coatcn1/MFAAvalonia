@@ -1,4 +1,6 @@
 using MFAAvalonia.ViewModels.UsersControls.Settings;
+using Newtonsoft.Json.Linq;
+using System.Reflection;
 
 static void Assert(bool condition, string message)
 {
@@ -130,9 +132,24 @@ static async Task CancelPreventsPendingSaveAsync()
     Assert(calls == 0, "cancelled save still ran");
 }
 
+static void RuntimeOptionsIncludeProcessCleanupSwitch()
+{
+    var model = new PerformanceProfileSettingsUserControlModel();
+    var capture = typeof(PerformanceProfileSettingsUserControlModel).GetMethod(
+        "CaptureRuntimeOptions",
+        BindingFlags.Instance | BindingFlags.NonPublic);
+    Assert(capture != null, "CaptureRuntimeOptions method missing");
+    var options = (JObject?)capture!.Invoke(model, null);
+    Assert(options != null, "runtime options capture returned null");
+    Assert(
+        options!.Value<bool>("skip_process_conflict_cleanup") == false,
+        "process cleanup switch must default to false");
+}
+
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
 await ReportsTerminalFailureAfterRetryAsync();
 await CancelPreventsPendingSaveAsync();
-Console.WriteLine("MFA auto-save tests passed: 5");
+RuntimeOptionsIncludeProcessCleanupSwitch();
+Console.WriteLine("MFA auto-save tests passed: 6");

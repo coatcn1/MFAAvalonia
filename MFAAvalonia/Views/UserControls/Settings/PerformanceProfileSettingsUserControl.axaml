@@ -205,6 +205,22 @@
             </ItemsControl>
           </StackPanel>
         </TabItem>
+
+        <TabItem Header="任务安全">
+          <StackPanel Spacing="14" Margin="0,12,0,0">
+            <TextBlock Text="任务安全" FontSize="18" FontWeight="DemiBold" />
+            <TextBlock Text="任务启动时最多用 30 秒检测其他程序占用。默认首次警告，再次运行时尝试清理。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding SkipProcessConflictCleanup, Mode=TwoWay}" />
+              <TextBlock Text="跳过其他程序进程占用清理" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock Text="开启后仍执行占用检测；发现占用或检测超时时仅显示通用警告并继续任务，绝不终止其他进程。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <TextBlock Text="修改后自动保存。" Opacity="0.75" />
+          </StackPanel>
+        </TabItem>
       </TabControl>
       <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" Opacity="0.8" />
     </StackPanel>

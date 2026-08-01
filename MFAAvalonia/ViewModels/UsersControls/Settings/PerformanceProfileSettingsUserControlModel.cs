@@ -44,6 +44,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _lifeSafetyEnabled = true;
     [ObservableProperty] private int _lifeExitThresholdPercent = 20;
     [ObservableProperty] private bool _rehearsalIgnoreLifeSafety = true;
+    [ObservableProperty] private bool _skipProcessConflictCleanup;
     [ObservableProperty] private bool _gameEffectSettingsEnabled = true;
     [ObservableProperty] private bool _judgementAssistEffect = true;
     [ObservableProperty] private int _tapEffect = 1;
@@ -89,6 +90,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnLifeSafetyEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnLifeExitThresholdPercentChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnRehearsalIgnoreLifeSafetyChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnSkipProcessConflictCleanupChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnGameEffectSettingsEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnJudgementAssistEffectChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnTapEffectChanged(int value) => ScheduleRuntimeAutoSave();
@@ -120,6 +122,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     (runtime?.Value<int?>("life_exit_threshold") ?? 200) / 10, 1, 99);
                 RehearsalIgnoreLifeSafety =
                     runtime?.Value<bool?>("rehearsal_ignore_life_safety") ?? true;
+                SkipProcessConflictCleanup =
+                    runtime?.Value<bool?>("skip_process_conflict_cleanup") ?? false;
                 GameEffectSettingsEnabled =
                     runtime?.Value<bool?>("game_effect_settings_enabled") ?? true;
                 JudgementAssistEffect =
@@ -168,6 +172,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["life_safety_enabled"] = LifeSafetyEnabled,
         ["life_exit_threshold"] = LifeExitThresholdPercent * 10,
         ["rehearsal_ignore_life_safety"] = RehearsalIgnoreLifeSafety,
+        ["skip_process_conflict_cleanup"] = SkipProcessConflictCleanup,
         ["game_effect_settings_enabled"] = GameEffectSettingsEnabled,
         ["judgement_assist_effect"] = JudgementAssistEffect,
         ["tap_effect"] = TapEffect,
