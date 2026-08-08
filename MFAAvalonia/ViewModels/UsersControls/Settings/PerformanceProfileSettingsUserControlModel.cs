@@ -46,6 +46,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _rehearsalIgnoreLifeSafety = true;
     [ObservableProperty] private bool _skipProcessConflictCleanup;
     [ObservableProperty] private bool _gameEffectSettingsEnabled = true;
+    [ObservableProperty] private int _noteSkinType = 1;
     [ObservableProperty] private bool _judgementAssistEffect = true;
     [ObservableProperty] private int _tapEffect = 1;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
@@ -92,6 +93,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnRehearsalIgnoreLifeSafetyChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnSkipProcessConflictCleanupChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnGameEffectSettingsEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnNoteSkinTypeChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnJudgementAssistEffectChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnTapEffectChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -126,6 +128,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("skip_process_conflict_cleanup") ?? false;
                 GameEffectSettingsEnabled =
                     runtime?.Value<bool?>("game_effect_settings_enabled") ?? true;
+                NoteSkinType = Math.Clamp(
+                    runtime?.Value<int?>("note_skin_type") ?? 1, 1, 7);
                 JudgementAssistEffect =
                     runtime?.Value<bool?>("judgement_assist_effect") ?? true;
                 TapEffect = Math.Clamp(
@@ -174,6 +178,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["rehearsal_ignore_life_safety"] = RehearsalIgnoreLifeSafety,
         ["skip_process_conflict_cleanup"] = SkipProcessConflictCleanup,
         ["game_effect_settings_enabled"] = GameEffectSettingsEnabled,
+        ["note_skin_type"] = NoteSkinType,
         ["judgement_assist_effect"] = JudgementAssistEffect,
         ["tap_effect"] = TapEffect,
         ["calibration_note_speeds"] = new JObject

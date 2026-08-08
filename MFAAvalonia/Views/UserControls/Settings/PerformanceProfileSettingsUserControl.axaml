@@ -144,6 +144,12 @@
               <TextBlock Text="开启判定辅助效果（整条轨道亮光）" VerticalAlignment="Center" />
             </DockPanel>
             <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="NOTE TYPE" VerticalAlignment="Center" />
+              <NumericUpDown Value="{Binding NoteSkinType, Mode=TwoWay}" Minimum="1" Maximum="7" Width="90" />
+              <TextBlock Text="TYPE1–TYPE7；修改后开演前必须从游戏设置页读回复核"
+                         VerticalAlignment="Center" Opacity="0.75" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="10">
               <TextBlock Text="TAP EFFECT" VerticalAlignment="Center" />
               <NumericUpDown Value="{Binding TapEffect, Mode=TwoWay}" Minimum="1" Maximum="5" Width="90" />
               <TextBlock Text="可选 1–5；当前实测配置为开启判定辅助 + 1"

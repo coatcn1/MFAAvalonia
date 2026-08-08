@@ -144,6 +144,15 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
     Assert(
         options!.Value<bool>("skip_process_conflict_cleanup") == false,
         "process cleanup switch must default to false");
+    Assert(
+        options.Value<int>("note_skin_type") == 1,
+        "note skin type must default to TYPE1");
+    Assert(
+        options.Value<int>("tap_effect") == 1,
+        "tap effect must default to 1");
+    Assert(
+        options.Value<bool>("judgement_assist_effect"),
+        "judgement assist must default to enabled");
 }
 
 await DebouncesToLatestChangeAsync();
@@ -152,4 +161,4 @@ await RetriesOnceAsync();
 await ReportsTerminalFailureAfterRetryAsync();
 await CancelPreventsPendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
-Console.WriteLine("MFA auto-save tests passed: 6");
+Console.WriteLine("MFA auto-save tests passed: 6 (including visual settings)");
