@@ -36,6 +36,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private PerformanceProfileItem? _selectedProfile;
     [ObservableProperty] private string _selectionText = "尚未加载";
     [ObservableProperty] private string _statusText = string.Empty;
+    [ObservableProperty] private string _chartCatalogText = "尚未读取本地谱面清单";
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private int _targetFps = 60;
     [ObservableProperty] private int _timingOffsetMs;
@@ -49,6 +50,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private int _noteSkinType = 1;
     [ObservableProperty] private bool _judgementAssistEffect = true;
     [ObservableProperty] private int _tapEffect = 1;
+    [ObservableProperty] private bool _chartPredictionEnabled = true;
+    [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _normalCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _hardCalibrationSpeed = 2.00m;
@@ -96,6 +99,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnNoteSkinTypeChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnJudgementAssistEffectChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnTapEffectChanged(int value) => ScheduleRuntimeAutoSave();
+    partial void OnChartPredictionEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnNormalCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnHardCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -134,6 +139,10 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("judgement_assist_effect") ?? true;
                 TapEffect = Math.Clamp(
                     runtime?.Value<int?>("tap_effect") ?? 1, 1, 5);
+                ChartPredictionEnabled =
+                    runtime?.Value<bool?>("chart_prediction_enabled") ?? true;
+                ChartPredictPresses =
+                    runtime?.Value<bool?>("chart_predict_presses") ?? true;
                 var speeds = (JObject?)runtime?["calibration_note_speeds"];
                 EasyCalibrationSpeed = speeds?.Value<decimal?>("Easy") ?? 2.00m;
                 NormalCalibrationSpeed = speeds?.Value<decimal?>("Normal") ?? 2.00m;
@@ -143,6 +152,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                 ArtifactLocations.Clear();
                 foreach (var item in await ProfileManagerClient.LoadArtifactLocationsAsync())
                     ArtifactLocations.Add(item);
+                ChartCatalogText = await ProfileManagerClient.LoadChartCatalogStatusAsync();
 
                 var selection = (JObject?)result["selection"];
                 var selectedName = selection?.Value<string>("profile");
@@ -181,6 +191,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["note_skin_type"] = NoteSkinType,
         ["judgement_assist_effect"] = JudgementAssistEffect,
         ["tap_effect"] = TapEffect,
+        ["chart_prediction_enabled"] = ChartPredictionEnabled,
+        ["chart_predict_presses"] = ChartPredictPresses,
         ["calibration_note_speeds"] = new JObject
         {
             ["Easy"] = EasyCalibrationSpeed,
@@ -307,6 +319,24 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
             .After(TimeSpan.FromSeconds(8))
             .Queue();
         return Task.CompletedTask;
+    }
+
+    [RelayCommand]
+    private async Task SyncBestdoriChartsAsync()
+    {
+        var succeeded = await RunAsync(async () =>
+        {
+            StatusText = "正在同步 Bestdori 谱面；已有文件会校验后复用…";
+            await ProfileManagerClient.SyncBestdoriChartsAsync(message =>
+            {
+                if (!string.IsNullOrWhiteSpace(message))
+                    StatusText = $"谱面同步：{message}";
+            });
+            ChartCatalogText = await ProfileManagerClient.LoadChartCatalogStatusAsync();
+            StatusText = $"Bestdori 谱面同步完成；{ChartCatalogText}";
+        });
+        if (!succeeded)
+            ChartCatalogText = await ProfileManagerClient.LoadChartCatalogStatusAsync();
     }
 
     [RelayCommand]
@@ -552,9 +582,16 @@ public sealed class PerformanceProfileItem
     }
     private static string FormatRecord(JToken token)
     {
-        string V(string key) => token[key]?.ToString() ?? "—";
+        // Calibration sessions keep recognition fields under ``result`` so
+        // the attempt can also carry stage, artifact paths and stop reasons.
+        // Older profiles stored the fields directly on the attempt.  Read
+        // both layouts instead of rendering every judgement count as "—".
+        var result = token["result"] ?? token;
+        string V(string key) => result[key]?.ToString() ?? "—";
         var suggestion = token["suggested_timing_offset_ms"]?.ToString()
-                         ?? token["timing_suggestion_ms"]?.ToString() ?? "—";
+                         ?? token["timing_suggestion_ms"]?.ToString()
+                         ?? result["suggested_timing_offset_ms"]?.ToString()
+                         ?? result["timing_suggestion_ms"]?.ToString() ?? "—";
         return $"歌曲 {V("song_id")} · P/G/Gd/B/M {V("perfect")}/{V("great")}/{V("good")}/{V("bad")}/{V("miss")} · Fast/Slow {V("fast")}/{V("slow")} · 命中率 {V("hit_rate")} · 置信度 {V("confidence")} · 时序建议 {suggestion} ms · 通过 {V("passed")}";
     }
 }
@@ -576,6 +613,81 @@ internal static class ProfileManagerClient
         return paths.Properties()
             .Select(property => new ArtifactLocationItem(property.Name, property.Value.ToString()))
             .ToArray();
+    }
+
+    public static async Task<string> LoadChartCatalogStatusAsync()
+    {
+        try
+        {
+            var config = await LoadConfigAsync();
+            var sync = (JObject?)config["chart_sync"]
+                       ?? throw new InvalidDataException("profile-manager.json 缺少 chart_sync，请重新运行部署脚本");
+            var manifestPath = sync.Value<string>("manifest_path")
+                               ?? throw new InvalidDataException("chart_sync 缺少 manifest_path");
+            if (!File.Exists(manifestPath))
+                return "本地谱面清单不存在，请先同步";
+            var manifest = JObject.Parse(await File.ReadAllTextAsync(manifestPath));
+            return FormatChartCatalogStatus(manifest);
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException)
+        {
+            return $"本地谱面状态不可用：{ex.Message}";
+        }
+    }
+
+    internal static string FormatChartCatalogStatus(JObject manifest)
+    {
+        var summary = (JObject?)manifest["summary"]
+                      ?? throw new InvalidDataException("谱面清单缺少 summary");
+        var songs = summary.Value<int?>("songs_with_charts") ?? 0;
+        var charts = summary.Value<int?>("charts") ?? 0;
+        var jackets = summary.Value<int?>("jackets") ?? 0;
+        var errors = (summary.Value<int?>("recoverable_errors") ?? 0)
+                     + (summary.Value<int?>("fatal_errors") ?? 0);
+        var generatedAt = manifest.Value<string>("generated_at") ?? "未知时间";
+        return $"{songs} 首 / {charts} 张谱面 / {jackets} 个封面 / {errors} 个错误 · 更新于 {generatedAt}";
+    }
+
+    public static async Task SyncBestdoriChartsAsync(Action<string> progress)
+    {
+        var config = await LoadConfigAsync();
+        var sync = (JObject?)config["chart_sync"]
+                   ?? throw new InvalidDataException("profile-manager.json 缺少 chart_sync，请重新运行部署脚本");
+        var startInfo = new ProcessStartInfo(sync.Value<string>("child_exec")
+                                             ?? throw new InvalidDataException("chart_sync 缺少 child_exec"))
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = sync.Value<string>("working_directory") ?? AppContext.BaseDirectory
+        };
+        foreach (var arg in sync["child_args"]?.Values<string>() ?? [])
+            startInfo.ArgumentList.Add(arg);
+        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
+
+        using var process = Process.Start(startInfo)
+                            ?? throw new InvalidOperationException("无法启动 Bestdori 谱面同步器");
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(45));
+        try
+        {
+            while (await process.StandardOutput.ReadLineAsync(timeout.Token) is { } line)
+                progress(line);
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+            throw new TimeoutException("Bestdori 谱面同步超过 45 分钟，已终止同步器");
+        }
+        var stderr = (await stderrTask).Trim();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(stderr)
+                    ? $"谱面同步器退出码 {process.ExitCode}"
+                    : stderr);
     }
 
     public static async Task<JObject> InvokeAsync(JObject request)

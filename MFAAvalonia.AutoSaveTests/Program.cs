@@ -155,10 +155,75 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
         "judgement assist must default to enabled");
 }
 
+static void CalibrationRecordsReadNestedSessionResults()
+{
+    static JObject Attempt(int perfect, int great, int good, int bad, int miss) =>
+        new()
+        {
+            ["suggested_timing_offset_ms"] = -12,
+            ["result"] = new JObject
+            {
+                ["song_id"] = "song-306",
+                ["perfect"] = perfect,
+                ["great"] = great,
+                ["good"] = good,
+                ["bad"] = bad,
+                ["miss"] = miss,
+                ["fast"] = 3,
+                ["slow"] = 2,
+                ["hit_rate"] = 0.9875,
+                ["confidence"] = 0.9,
+            },
+        };
+
+    var item = new PerformanceProfileItem(new JObject
+    {
+        ["rehearsals"] = new JArray(Attempt(355, 41, 0, 0, 5)),
+        ["formal"] = Attempt(370, 25, 0, 0, 6),
+    });
+
+    Assert(
+        item.CalibrationRecordsText.Contains("355/41/0/0/5"),
+        $"nested rehearsal judgements missing: {item.CalibrationRecordsText}");
+    Assert(
+        item.CalibrationRecordsText.Contains("370/25/0/0/6"),
+        $"nested formal judgements missing: {item.CalibrationRecordsText}");
+    Assert(
+        item.CalibrationRecordsText.Contains("时序建议 -12 ms"),
+        $"attempt-level timing suggestion missing: {item.CalibrationRecordsText}");
+}
+
+static void ChartCatalogSummaryIsReadable()
+{
+    var clientType = typeof(PerformanceProfileSettingsUserControlModel).Assembly.GetType(
+        "MFAAvalonia.ViewModels.UsersControls.Settings.ProfileManagerClient")
+        ?? throw new InvalidOperationException("profile manager client missing");
+    var formatter = clientType.GetMethod(
+        "FormatChartCatalogStatus",
+        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("chart catalog formatter missing");
+    var text = (string?)formatter.Invoke(null, [new JObject
+    {
+        ["generated_at"] = "2026-08-30T00:00:00Z",
+        ["summary"] = new JObject
+        {
+            ["songs_with_charts"] = 809,
+            ["charts"] = 1777,
+            ["jackets"] = 867,
+            ["recoverable_errors"] = 2,
+            ["fatal_errors"] = 1,
+        },
+    }]);
+    Assert(text != null && text.Contains("809 首 / 1777 张谱面 / 867 个封面 / 3 个错误"),
+        $"unexpected chart catalog status: {text}");
+}
+
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
 await ReportsTerminalFailureAfterRetryAsync();
 await CancelPreventsPendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
-Console.WriteLine("MFA auto-save tests passed: 6 (including visual settings)");
+CalibrationRecordsReadNestedSessionResults();
+ChartCatalogSummaryIsReadable();
+Console.WriteLine("MFA auto-save tests passed: 8 (including chart catalog status)");

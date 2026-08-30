@@ -141,7 +141,8 @@ public partial class App : Application
             FontService.Initialize();
 
             // 保存引用以便在退出时正确释放
-            _memoryCracker = new AvaloniaMemoryCracker();
+            _memoryCracker = new AvaloniaMemoryCracker(
+                () => Services != null && Instances.RootViewModel.IsRunning);
             _memoryCracker.Cracker();
 
             GlobalHotkeyService.Initialize();

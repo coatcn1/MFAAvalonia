@@ -66,8 +66,10 @@ public class AvaloniaMemoryCracker : IDisposable
     #region 字段
 
     private readonly CancellationTokenSource _cts = new();
+    private readonly Func<bool> _isTaskRunning;
     private bool _disposed;
     private Task? _monitorTask;
+    private bool _cleanupDeferredForActiveTask;
 
     // 专用 GC 线程（用于执行阻塞式 GC，避免阻塞 UI）
     private readonly Thread _gcThread;
@@ -127,8 +129,9 @@ public class AvaloniaMemoryCracker : IDisposable
 
     #region 构造函数
 
-    public AvaloniaMemoryCracker()
+    public AvaloniaMemoryCracker(Func<bool>? isTaskRunning = null)
     {
+        _isTaskRunning = isTaskRunning ?? (() => false);
         // 创建专用 GC 线程，设置为后台线程
         _gcThread = new Thread(GcThreadLoop)
         {
@@ -325,6 +328,32 @@ public class AvaloniaMemoryCracker : IDisposable
                     var currentMemory = GetCurrentMemoryUsage();
                     var memoryInfo = GetMemoryPressureInfo();
 
+                    // A blocking full GC suspends every managed thread even
+                    // when GC.Collect is initiated from this dedicated
+                    // worker. Maa task execution and Agent/controller IPC
+                    // must remain responsive during realtime play, so defer
+                    // all manual cleanup until the task queue is idle. The
+                    // runtime's own automatic GC remains active.
+                    if (IsTaskRunning())
+                    {
+                        if (!_cleanupDeferredForActiveTask)
+                        {
+                            LoggerHelper.Info("[内存管理]任务运行中，延后手动内存清理");
+                            _cleanupDeferredForActiveTask = true;
+                        }
+
+                        await Task.Delay(
+                            TimeSpan.FromSeconds(intervalSeconds),
+                            _cts.Token);
+                        continue;
+                    }
+
+                    if (_cleanupDeferredForActiveTask)
+                    {
+                        LoggerHelper.Info("[内存管理]任务结束，恢复手动内存清理");
+                        _cleanupDeferredForActiveTask = false;
+                    }
+
                     // 根据内存压力决定是否需要清理
                     var shouldCleanup = ShouldPerformCleanup(currentMemory, memoryInfo);
 
@@ -359,6 +388,19 @@ public class AvaloniaMemoryCracker : IDisposable
                 }
             }
         }, _cts.Token);
+    }
+
+    private bool IsTaskRunning()
+    {
+        try
+        {
+            return _isTaskRunning();
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"[内存管理]读取任务状态失败: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>判断是否需要执行清理</summary>
