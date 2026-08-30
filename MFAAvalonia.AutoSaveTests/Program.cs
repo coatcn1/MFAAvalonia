@@ -218,6 +218,13 @@ static void ChartCatalogSummaryIsReadable()
         $"unexpected chart catalog status: {text}");
 }
 
+static void ApplicationBrandingUsesProjectName()
+{
+    Assert(
+        MFAAvalonia.Assets.Localization.Strings.AppTitle == "MaaBanGDream",
+        $"unexpected application title: {MFAAvalonia.Assets.Localization.Strings.AppTitle}");
+}
+
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
@@ -226,4 +233,5 @@ await CancelPreventsPendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
 CalibrationRecordsReadNestedSessionResults();
 ChartCatalogSummaryIsReadable();
-Console.WriteLine("MFA auto-save tests passed: 8 (including chart catalog status)");
+ApplicationBrandingUsesProjectName();
+Console.WriteLine("MFA auto-save tests passed: 9 (including chart catalog status and branding)");
