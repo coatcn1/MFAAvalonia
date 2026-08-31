@@ -223,6 +223,11 @@ static void ApplicationBrandingUsesProjectName()
     Assert(
         MFAAvalonia.Assets.Localization.Strings.AppTitle == "MaaBanGDream",
         $"unexpected application title: {MFAAvalonia.Assets.Localization.Strings.AppTitle}");
+    Assert(
+        MFAAvalonia.Helper.IconHelper.DefaultBrandIconUri.EndsWith(
+            "/Assets/maabangdream-icon.png",
+            StringComparison.Ordinal),
+        $"unexpected application icon: {MFAAvalonia.Helper.IconHelper.DefaultBrandIconUri}");
 }
 
 await DebouncesToLatestChangeAsync();

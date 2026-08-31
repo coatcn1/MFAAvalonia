@@ -13,6 +13,9 @@ namespace MFAAvalonia.Helper;
 
 public static class IconHelper
 {
+    public const string DefaultBrandIconUri =
+        "avares://MFAAvalonia.Core/Assets/maabangdream-icon.png";
+
     private static readonly Lazy<Bitmap> LazyIcon = new(LoadIconWithFallback);
     public static Bitmap Icon => LazyIcon.Value;
     public static WindowIcon WindowIcon => new (Icon);
@@ -51,10 +54,13 @@ public static class IconHelper
             }
 
             // 尝试从嵌入资源加载
-            var uri = new Uri("avares://MFAAvalonia.Core/Assets/logo.ico");
+            // The full hanging-frame artwork remains available as the project
+            // logo. Use the close taskbar crop here so the character stays
+            // legible when Windows scales the window icon down to 16-32 px.
+            var uri = new Uri(DefaultBrandIconUri);
             if (AssetLoader.Exists(uri))
             {
-                var assets = AssetLoader.Open(uri);
+                using var assets = AssetLoader.Open(uri);
                 return new Bitmap(assets);
             }
 
