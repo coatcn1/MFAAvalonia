@@ -22,7 +22,8 @@
             </StackPanel>
             <TextBlock Text="{Binding SelectionText}" TextWrapping="Wrap" FontWeight="DemiBold" />
             <DataGrid ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" AutoGenerateColumns="False"
-                      IsReadOnly="True" Height="230" FontSize="14" RowHeight="32"
+                      IsReadOnly="True" CanUserResizeColumns="True" CanUserReorderColumns="False"
+                      Height="230" FontSize="14" RowHeight="32"
                       GridLinesVisibility="Horizontal">
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="文件名" Width="2.6*">
@@ -60,24 +61,24 @@
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="创建时间" Width="*">
+                <DataGridTemplateColumn Header="创建时间" Width="180">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding CreatedAt}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding CreatedAt}" FontSize="13" VerticalAlignment="Center" />
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="验收时间" Width="*">
+                <DataGridTemplateColumn Header="验收时间" Width="180">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding AcceptedAt}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding AcceptedAt}" FontSize="13" VerticalAlignment="Center" />
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="修改时间" Width="*">
+                <DataGridTemplateColumn Header="修改时间" Width="180">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding ModifiedAt}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding ModifiedAt}" FontSize="13" VerticalAlignment="Center" />
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

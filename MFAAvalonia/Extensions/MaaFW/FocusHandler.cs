@@ -428,11 +428,22 @@ public class FocusHandler
             || input.StartsWith("$", StringComparison.Ordinal))
             return false;
 
-        return input.Contains(Path.DirectorySeparatorChar)
-               || input.Contains(Path.AltDirectorySeparatorChar)
-               || input.StartsWith("./", StringComparison.Ordinal)
-               || input.StartsWith("../", StringComparison.Ordinal)
-               || Path.HasExtension(input);
+        // 只有明显像文件路径的文本才按路径解析并告警。普通提示里的“/”
+        // （例如“已完成 0/1”或“planned/sent/executed=…/…/…”）不是路径，
+        // 不应触发“Focus 内容文件解析失败”的噪音告警。
+        if (input.StartsWith("./", StringComparison.Ordinal)
+            || input.StartsWith("../", StringComparison.Ordinal)
+            || input.StartsWith(".\\", StringComparison.Ordinal)
+            || input.StartsWith("..\\", StringComparison.Ordinal)
+            || Path.IsPathRooted(input))
+        {
+            return true;
+        }
+
+        return input.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+               || input.EndsWith(".markdown", StringComparison.OrdinalIgnoreCase)
+               || input.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)
+               || input.EndsWith(".text", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Control CreateMarkdownContent(string markdown, double maxHeight)
