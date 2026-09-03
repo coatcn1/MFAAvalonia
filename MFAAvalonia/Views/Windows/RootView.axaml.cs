@@ -280,25 +280,35 @@ public partial class RootView : SukiWindow
                                 _ => "Window"
                             };
 
-                            vm.AddLogByKey("ConnectingTo", (IBrush?)null, true, true, controllerKey);
-
                             if (controllerType == MaaControllerTypes.PlayCover)
                             {
                                 vm.TryReadPlayCoverConfig();
                             }
                             else
                             {
-                                vm.TryReadAdbDeviceFromConfig();
+                                // 启动连接必须先同步恢复设备；异步刷新会让连接任务抢先读到空序列号。
+                                vm.TryReadAdbDeviceFromConfig(inTask: false);
                             }
 
-                            vm.Processor.TaskQueue.Enqueue(new MFATask
+                            var hasStartupConnectionTarget = controllerType != MaaControllerTypes.Adb
+                                || !string.IsNullOrWhiteSpace(vm.Processor.Config.AdbDevice.AdbSerial);
+                            if (!hasStartupConnectionTarget)
                             {
-                                Name = "连接检测",
-                                Type = MFATask.MFATaskType.MFA,
-                                Action = async () => await vm.Processor.TestConnecting(),
-                                OwnerViewModel = vm,
-                            });
-                            vm.Processor.Start(true, checkUpdate: true);
+                                LoggerHelper.Warning(
+                                    "启动时未发现可用的 ADB 设备，已保持未连接；启动模拟器后刷新或重新连接即可。");
+                            }
+                            else
+                            {
+                                vm.AddLogByKey("ConnectingTo", (IBrush?)null, true, true, controllerKey);
+                                vm.Processor.TaskQueue.Enqueue(new MFATask
+                                {
+                                    Name = "连接检测",
+                                    Type = MFATask.MFATaskType.MFA,
+                                    Action = async () => await vm.Processor.TestConnecting(),
+                                    OwnerViewModel = vm,
+                                });
+                                vm.Processor.Start(true, checkUpdate: true);
+                            }
                         }
 
                         GlobalConfiguration.SetValue(ConfigurationKeys.NoAutoStart, bool.FalseString);
