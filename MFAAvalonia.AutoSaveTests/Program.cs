@@ -135,6 +135,12 @@ static async Task CancelPreventsPendingSaveAsync()
 static void RuntimeOptionsIncludeProcessCleanupSwitch()
 {
     var model = new PerformanceProfileSettingsUserControlModel();
+    var nativeSwitch = typeof(PerformanceProfileSettingsUserControlModel).GetProperty(
+        "NativeRealtimeEnabled");
+    Assert(nativeSwitch != null, "native realtime switch property missing");
+    Assert(
+        nativeSwitch!.GetValue(model) is false,
+        "native realtime switch must default to disabled");
     var capture = typeof(PerformanceProfileSettingsUserControlModel).GetMethod(
         "CaptureRuntimeOptions",
         BindingFlags.Instance | BindingFlags.NonPublic);
@@ -144,6 +150,10 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
     Assert(
         options!.Value<bool>("skip_process_conflict_cleanup") == false,
         "process cleanup switch must default to false");
+    Assert(
+        options["native_realtime_enabled"]?.Type == JTokenType.Boolean
+        && options.Value<bool>("native_realtime_enabled") == false,
+        "native realtime option must be captured and default to false");
     Assert(
         options.Value<int>("note_skin_type") == 1,
         "note skin type must default to TYPE1");

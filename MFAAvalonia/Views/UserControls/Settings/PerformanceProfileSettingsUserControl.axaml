@@ -146,6 +146,15 @@
             <TextBlock Text="谱面缺失、初始锁相不可信或连续漂移超限时自动回退视觉演奏；修改其他演出设置不会清除这两个开关。"
                        TextWrapping="Wrap" Opacity="0.75" />
             <Border Height="1" Background="#30FFFFFF" Margin="0,4" />
+            <TextBlock Text="Native C++ 演奏核心" FontSize="16" FontWeight="DemiBold" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding NativeRealtimeEnabled, Mode=TwoWay}" />
+              <TextBlock Text="启用 Native C++ 演奏核心（测试）" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock Text="默认关闭；开启后由 Native 从第一音符开始独占触控，故障时安全终止且不会中途回退 Legacy。只建议用于固定歌曲验收。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <Border Height="1" Background="#30FFFFFF" Margin="0,4" />
             <TextBlock Text="Bestdori 本地数据" FontSize="16" FontWeight="DemiBold" />
             <TextBlock Text="{Binding ChartCatalogText}" TextWrapping="Wrap" />
             <Button Content="同步/更新全部谱面（Hard / Expert / Special）"
