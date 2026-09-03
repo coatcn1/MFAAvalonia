@@ -53,6 +53,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _chartPredictionEnabled = true;
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
+    [ObservableProperty] private int _playFailureRetryCount = 1;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _normalCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _hardCalibrationSpeed = 2.00m;
@@ -103,6 +104,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnChartPredictionEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnPlayFailureRetryCountChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnNormalCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnHardCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -147,6 +149,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("chart_predict_presses") ?? true;
                 NativeRealtimeEnabled =
                     runtime?.Value<bool?>("native_realtime_enabled") ?? false;
+                PlayFailureRetryCount = Math.Clamp(
+                    runtime?.Value<int?>("play_failure_retry_count") ?? 1, 0, 3);
                 var speeds = (JObject?)runtime?["calibration_note_speeds"];
                 EasyCalibrationSpeed = speeds?.Value<decimal?>("Easy") ?? 2.00m;
                 NormalCalibrationSpeed = speeds?.Value<decimal?>("Normal") ?? 2.00m;
@@ -198,6 +202,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["chart_prediction_enabled"] = ChartPredictionEnabled,
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
+        ["play_failure_retry_count"] = PlayFailureRetryCount,
         ["calibration_note_speeds"] = new JObject
         {
             ["Easy"] = EasyCalibrationSpeed,

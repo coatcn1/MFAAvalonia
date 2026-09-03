@@ -253,6 +253,13 @@
         <TabItem Header="任务安全">
           <StackPanel Spacing="14" Margin="0,12,0,0">
             <TextBlock Text="任务安全" FontSize="18" FontWeight="DemiBold" />
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="单局技术失败重试次数" VerticalAlignment="Center" />
+              <NumericUpDown Value="{Binding PlayFailureRetryCount, Mode=TwoWay}"
+                             Minimum="0" Maximum="3" Width="90" />
+              <TextBlock Text="用于普通单人、校准与协力；每次都会先释放触点并恢复页面"
+                         VerticalAlignment="Center" Opacity="0.75" />
+            </StackPanel>
             <TextBlock Text="任务启动时最多用 30 秒检测其他程序占用。默认首次警告，再次运行时尝试清理。"
                        TextWrapping="Wrap" Opacity="0.75" />
             <DockPanel>
