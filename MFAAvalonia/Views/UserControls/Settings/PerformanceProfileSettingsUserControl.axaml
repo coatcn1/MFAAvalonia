@@ -155,6 +155,13 @@
             </DockPanel>
             <TextBlock Text="默认关闭；开启后由 Native 从第一音符开始独占触控，故障时安全终止且不会中途回退 Legacy。只建议用于固定歌曲验收。"
                        TextWrapping="Wrap" Opacity="0.75" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding CooperativeJitterEnabled, Mode=TwoWay}" />
+              <TextBlock Text="协力演出漏键抖动（避免连续全 PERFECT 被判异常）" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock Text="仅 Native 协力生效：每局确定性随机漏掉 1~2 个普通单点（首音保留），落点每局不同；关闭后正常按谱面全连。"
+                       TextWrapping="Wrap" Opacity="0.75" />
             <Border Height="1" Background="#30FFFFFF" Margin="0,4" />
             <TextBlock Text="Bestdori 本地数据" FontSize="16" FontWeight="DemiBold" />
             <TextBlock Text="{Binding ChartCatalogText}" TextWrapping="Wrap" />

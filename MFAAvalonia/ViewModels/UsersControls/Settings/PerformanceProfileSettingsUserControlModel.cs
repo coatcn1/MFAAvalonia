@@ -27,6 +27,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     private JObject? _pendingRuntimeOptions;
     private ProfileSaveRequest? _pendingProfileSave;
     private int _suspendAutoSave;
+    private bool _runtimeOptionsLoaded;
 
     public string[] Difficulties { get; } = ["Easy", "Normal", "Hard", "Expert", "Special"];
     public ObservableCollection<PerformanceProfileItem> Profiles { get; } = [];
@@ -53,6 +54,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _chartPredictionEnabled = true;
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
+    [ObservableProperty] private bool _cooperativeJitterEnabled = true;
     [ObservableProperty] private int _playFailureRetryCount = 1;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _normalCalibrationSpeed = 2.00m;
@@ -104,6 +106,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnChartPredictionEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnCooperativeJitterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnPlayFailureRetryCountChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnNormalCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -149,6 +152,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("chart_predict_presses") ?? true;
                 NativeRealtimeEnabled =
                     runtime?.Value<bool?>("native_realtime_enabled") ?? false;
+                CooperativeJitterEnabled =
+                    runtime?.Value<bool?>("cooperative_jitter_enabled") ?? true;
                 PlayFailureRetryCount = Math.Clamp(
                     runtime?.Value<int?>("play_failure_retry_count") ?? 1, 0, 3);
                 var speeds = (JObject?)runtime?["calibration_note_speeds"];
@@ -173,6 +178,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     ? $"{mode} · {selectedName ?? "无可用 Profile"} · 来源难度 {source}"
                     : $"{mode}已阻止正式演奏：{error}";
                 StatusText = $"共 {Profiles.Count} 个本机 Profile；修改后自动保存";
+                _runtimeOptionsLoaded = true;
             });
         }
         finally
@@ -202,6 +208,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["chart_prediction_enabled"] = ChartPredictionEnabled,
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
+        ["cooperative_jitter_enabled"] = CooperativeJitterEnabled,
         ["play_failure_retry_count"] = PlayFailureRetryCount,
         ["calibration_note_speeds"] = new JObject
         {
@@ -223,7 +230,9 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
 
     private void ScheduleRuntimeAutoSave()
     {
-        if (_suspendAutoSave > 0) return;
+        // 演出运行设置未成功加载前禁止自动保存：否则一次失败的读取会把
+        // 界面上的默认值整体写回，覆盖用户已有设置。
+        if (_suspendAutoSave > 0 || !_runtimeOptionsLoaded) return;
         _pendingRuntimeOptions = CaptureRuntimeOptions();
         StatusText = "演出运行设置已修改，正在自动保存…";
         _runtimeAutoSave.Schedule();
