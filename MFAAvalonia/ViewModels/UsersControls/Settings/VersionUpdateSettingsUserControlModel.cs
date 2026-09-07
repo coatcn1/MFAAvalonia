@@ -347,4 +347,132 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
         CdkTextVisible = false;
         VersionChecker.CheckCDKAsync();
     }
+
+    // ---- GitHub Releases 增量自更新（MaaBanGDream 便携包） ----
+
+    [ObservableProperty] private string _gitHubUpdateStatus = "尚未检查更新";
+
+    [ObservableProperty] private bool _hasGitHubUpdate;
+
+    [ObservableProperty] private bool _isGitHubUpdating;
+
+    [ObservableProperty] private bool _isApplyingGitHubUpdate;
+
+    private GitHubReleaseUpdater? _gitHubUpdater;
+
+    private GitHubReleaseUpdater.LatestRelease? _gitHubLatest;
+
+    /// <summary>启动时后台静默检查一次；结果只显示在设置页，不打断用户。</summary>
+    public void StartGitHubUpdateCheck()
+    {
+        _ = CheckGitHubUpdateAsync();
+    }
+
+    [RelayCommand]
+    private async Task CheckGitHubUpdate()
+    {
+        IsGitHubUpdating = true;
+        try
+        {
+            await CheckGitHubUpdateAsync();
+        }
+        finally
+        {
+            IsGitHubUpdating = false;
+        }
+    }
+
+    private async Task CheckGitHubUpdateAsync()
+    {
+        var updater = GetUpdater();
+        if (updater is null)
+        {
+            GitHubUpdateStatus = "无法确定安装目录，无法检查更新。";
+            return;
+        }
+
+        try
+        {
+            var latest = await updater.CheckLatestAsync(CancellationToken.None);
+            if (latest is null)
+            {
+                GitHubUpdateStatus = "无法连接 GitHub，请稍后再试。";
+                return;
+            }
+
+            _gitHubLatest = latest;
+            HasGitHubUpdate = GitHubReleaseUpdater.IsNewer(
+                latest.Version,
+                updater.LocalVersion);
+            GitHubUpdateStatus = HasGitHubUpdate
+                ? $"发现新版本 v{latest.Version}（当前 {updater.LocalVersion}）"
+                : $"已是最新版本 v{latest.Version}";
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Error($"GitHub 更新检查失败：{ex.Message}", ex);
+            GitHubUpdateStatus = "更新检查失败，请查看日志。";
+        }
+    }
+
+    [RelayCommand]
+    private async Task ApplyGitHubUpdate()
+    {
+        var updater = GetUpdater();
+        if (updater is null || _gitHubLatest is null || !HasGitHubUpdate)
+        {
+            GitHubUpdateStatus = "当前没有可用的新版本。";
+            return;
+        }
+
+        IsApplyingGitHubUpdate = true;
+        try
+        {
+            var progress = new Progress<string>(
+                text => DispatcherHelper.RunOnMainThread(() => GitHubUpdateStatus = text));
+            var plan = await updater.PlanAsync(_gitHubLatest, progress, CancellationToken.None);
+            if (plan is null)
+            {
+                return;
+            }
+
+            var ok = await updater.ApplyAsync(plan, progress, CancellationToken.None);
+            if (!ok)
+            {
+                GitHubUpdateStatus = "更新失败：文件校验未通过，已中止。";
+                return;
+            }
+
+            updater.ScheduleRestart();
+            ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
+            DispatcherHelper.RunOnMainThread(
+                () => Environment.Exit(0));
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Error($"GitHub 更新应用失败：{ex.Message}", ex);
+            GitHubUpdateStatus = $"更新失败：{ex.Message}";
+        }
+        finally
+        {
+            IsApplyingGitHubUpdate = false;
+        }
+    }
+
+    private GitHubReleaseUpdater? GetUpdater()
+    {
+        if (_gitHubUpdater is not null)
+        {
+            return _gitHubUpdater;
+        }
+
+        var baseDirectory = AppContext.BaseDirectory;
+        if (string.IsNullOrWhiteSpace(baseDirectory))
+        {
+            return null;
+        }
+
+        _gitHubUpdater = new GitHubReleaseUpdater(baseDirectory);
+        return _gitHubUpdater;
+    }
 }

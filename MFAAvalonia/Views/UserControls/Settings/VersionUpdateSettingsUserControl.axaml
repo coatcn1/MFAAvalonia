@@ -451,5 +451,44 @@
                 </DockPanel>
             </StackPanel>
         </suki:GlassCard>
+        <suki:GlassCard Padding="25,15,25,15">
+            <StackPanel Spacing="15">
+                <StackPanel HorizontalAlignment="Left" VerticalAlignment="Center">
+                    <TextBlock
+                        FontSize="16"
+                        FontWeight="SemiBold"
+                        Text="MaaBanGDream 版本更新" />
+                    <TextBlock
+                        Margin="0,4,0,0"
+                        Foreground="{DynamicResource SukiTextSecondaryColor}"
+                        Text="从 GitHub Releases 增量更新整个便携包，谱面等未变化内容不会重复下载。" />
+                </StackPanel>
+                <DockPanel>
+                    <StackPanel
+                        DockPanel.Dock="Right"
+                        Orientation="Horizontal"
+                        Spacing="8">
+                        <Button
+                            Command="{Binding ApplyGitHubUpdateCommand}"
+                            Content="立即更新"
+                            IsEnabled="{calcBinding:Binding 'HasGitHubUpdate and !IsApplyingGitHubUpdate'}"
+                            IsVisible="{Binding HasGitHubUpdate}"
+                            MinHeight="40"
+                            Padding="16,8" />
+                        <Button
+                            Command="{Binding CheckGitHubUpdateCommand}"
+                            Content="检查更新"
+                            IsEnabled="{calcBinding:Binding '!IsGitHubUpdating'}"
+                            MinHeight="40"
+                            Padding="16,8" />
+                    </StackPanel>
+                    <TextBlock
+                        MaxWidth="460"
+                        Text="{Binding GitHubUpdateStatus}"
+                        TextWrapping="Wrap"
+                        VerticalAlignment="Center" />
+                </DockPanel>
+            </StackPanel>
+        </suki:GlassCard>
     </StackPanel>
 </UserControl>

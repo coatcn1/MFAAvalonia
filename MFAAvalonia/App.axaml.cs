@@ -208,6 +208,14 @@ public partial class App : Application
 
                 TrayIconManager.InitializeTrayIcon(this, Instances.RootView, Instances.RootViewModel);
 
+                // 启动后延迟静默检查一次 GitHub 版本更新，不阻塞启动，
+                // 离线或失败只记录在设置页状态里。
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(6));
+                    Instances.VersionUpdateSettingsUserControlModel?.StartGitHubUpdateCheck();
+                });
+
                 if (GlobalConfiguration.HasFileAccessError)
                 {
                     var reason = (GlobalConfiguration.LastFileAccessErrorMessage ?? string.Empty).Trim();
