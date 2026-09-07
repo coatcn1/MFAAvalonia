@@ -102,33 +102,6 @@
           </StackPanel>
         </TabItem>
 
-        <TabItem Header="校准流速">
-          <StackPanel Spacing="14" Margin="0,12,0,0">
-            <TextBlock Text="每难度校准流速" FontSize="18" FontWeight="DemiBold" />
-            <TextBlock Text="每个 Profile 固定一种流速；四首校准歌曲期间不会自动改变。开演前会读取游戏内实际值，不一致时自动修正并复核。"
-                       TextWrapping="Wrap" Opacity="0.75" />
-            <Grid ColumnDefinitions="Auto,110,24,Auto,110" RowDefinitions="Auto,Auto,Auto"
-                  ColumnSpacing="8" RowSpacing="10">
-              <TextBlock Grid.Row="0" Grid.Column="0" Text="Easy" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding EasyCalibrationSpeed, Mode=TwoWay}"
-                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
-              <TextBlock Grid.Row="0" Grid.Column="3" Text="Normal" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="0" Grid.Column="4" Value="{Binding NormalCalibrationSpeed, Mode=TwoWay}"
-                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
-              <TextBlock Grid.Row="1" Grid.Column="0" Text="Hard" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding HardCalibrationSpeed, Mode=TwoWay}"
-                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
-              <TextBlock Grid.Row="1" Grid.Column="3" Text="Expert" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding ExpertCalibrationSpeed, Mode=TwoWay}"
-                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
-              <TextBlock Grid.Row="2" Grid.Column="0" Text="Special" VerticalAlignment="Center" />
-              <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding SpecialCalibrationSpeed, Mode=TwoWay}"
-                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
-            </Grid>
-            <TextBlock Text="修改后自动保存。" Opacity="0.75" />
-          </StackPanel>
-        </TabItem>
-
         <TabItem Header="谱面辅助">
           <StackPanel Spacing="14" Margin="0,12,0,0">
             <TextBlock Text="本地谱面与主时钟" FontSize="18" FontWeight="DemiBold" />
@@ -201,6 +174,28 @@
               <TextBlock Text="可选 1–5；当前实测配置为开启判定辅助 + 1"
                          VerticalAlignment="Center" Opacity="0.75" />
             </StackPanel>
+            <Border Height="1" Background="#30FFFFFF" Margin="0,4" />
+            <TextBlock Text="每难度校准流速" FontSize="16" FontWeight="DemiBold" />
+            <TextBlock Text="每个 Profile 固定一种流速；四首校准歌曲期间不会自动改变。开演前会读取游戏内实际值，不一致时自动修正并复核。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <Grid ColumnDefinitions="Auto,110,24,Auto,110" RowDefinitions="Auto,Auto,Auto"
+                  ColumnSpacing="8" RowSpacing="10">
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="Easy" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding EasyCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="0" Grid.Column="3" Text="Normal" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="0" Grid.Column="4" Value="{Binding NormalCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="Hard" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding HardCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="1" Grid.Column="3" Text="Expert" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding ExpertCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+              <TextBlock Grid.Row="2" Grid.Column="0" Text="Special" VerticalAlignment="Center" />
+              <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding SpecialCalibrationSpeed, Mode=TwoWay}"
+                             Minimum="1" Maximum="11" Increment="0.01" FormatString="F2" />
+            </Grid>
             <TextBlock Text="修改后自动保存。" Opacity="0.75" />
           </StackPanel>
         </TabItem>
