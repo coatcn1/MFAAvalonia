@@ -26,7 +26,7 @@
                       Height="230" FontSize="14" RowHeight="32"
                       GridLinesVisibility="Horizontal">
               <DataGrid.Columns>
-                <DataGridTemplateColumn Header="文件名" Width="2.6*">
+                <DataGridTemplateColumn Header="文件名" Width="220" MinWidth="120">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
                       <TextBlock Text="{Binding Filename}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
@@ -47,6 +47,20 @@
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="特效" Width="110">
+                  <DataGridTemplateColumn.CellTemplate>
+                    <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                      <TextBlock Text="{Binding EffectText}" FontSize="13" VerticalAlignment="Center" />
+                    </DataTemplate>
+                  </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="引擎" Width="80">
+                  <DataGridTemplateColumn.CellTemplate>
+                    <DataTemplate x:DataType="settings:PerformanceProfileItem">
+                      <TextBlock Text="{Binding EngineText}" FontSize="13" VerticalAlignment="Center" />
+                    </DataTemplate>
+                  </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="环境">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
@@ -58,20 +72,6 @@
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
                       <TextBlock Text="{Binding NoteSpeedText}" FontSize="13" VerticalAlignment="Center" />
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="创建时间" Width="180">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding CreatedAt}" FontSize="13" VerticalAlignment="Center" />
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="验收时间" Width="180">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding AcceptedAt}" FontSize="13" VerticalAlignment="Center" />
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

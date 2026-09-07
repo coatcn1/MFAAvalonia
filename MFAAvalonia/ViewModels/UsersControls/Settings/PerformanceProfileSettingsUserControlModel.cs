@@ -580,6 +580,27 @@ public sealed class PerformanceProfileItem
     public string NoteSpeedText =>
         ((JObject?)_value["environment"])?.Value<decimal?>("note_speed")?.ToString("F2")
         ?? "—";
+    public string EffectText
+    {
+        get
+        {
+            var env = (JObject?)_value["environment"];
+            if (env == null) return "—";
+            var tap = env["tap_effect"]?.ToString() ?? "—";
+            var skin = env["note_skin_type"]?.ToString() ?? "—";
+            return $"TAP {tap} · TYPE {skin}";
+        }
+    }
+    public string EngineText
+    {
+        get
+        {
+            var engine = ((JObject?)_value["environment"])?["engine"]?.ToString();
+            return string.Equals(engine, "native", StringComparison.OrdinalIgnoreCase)
+                ? "Native"
+                : "Legacy";
+        }
+    }
     public JObject Settings => (JObject?)_value["settings"] ?? new JObject();
     public string EnvironmentText
     {
