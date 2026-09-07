@@ -390,9 +390,11 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         if (SelectedProfile == null) return;
         var succeeded = await RunAsync(async () =>
         {
+            // 钉选跟随所选文件自身的校准难度；难度下拉框只负责筛选列表，
+            // 不参与钉选槽位，避免把 Expert Profile 误钉进 Easy 槽。
             await ProfileManagerClient.InvokeAsync(new JObject
             {
-                ["operation"] = "pin", ["difficulty"] = Difficulty,
+                ["operation"] = "pin", ["difficulty"] = SelectedProfile.Difficulty,
                 ["profile"] = SelectedProfile.Filename
             });
         });
@@ -406,7 +408,9 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         {
             await ProfileManagerClient.InvokeAsync(new JObject
             {
-                ["operation"] = "unpin", ["difficulty"] = Difficulty
+                // 与钉选一致：按所选文件自身的难度解钉；未选中时退回下拉框槽位。
+                ["operation"] = "unpin",
+                ["difficulty"] = SelectedProfile?.Difficulty ?? Difficulty
             });
         });
         if (succeeded) await RefreshAsync();
