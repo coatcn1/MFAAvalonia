@@ -46,6 +46,9 @@ public sealed class GitHubReleaseUpdater
 
     public string? LocalVersion { get; private set; }
 
+    /// <summary>本次应用是否暂存了 .new 文件，需要重启进程后才能完成替换。</summary>
+    public bool RestartRequired { get; private set; }
+
     public sealed record LatestRelease(string Tag, string Version);
 
     public sealed record ZipEntry(
@@ -262,6 +265,7 @@ public sealed class GitHubReleaseUpdater
             "MFAAvalonia.Core.dll",
         };
         var applied = 0;
+        RestartRequired = false;
         foreach (var entry in plan.Entries)
         {
             ct.ThrowIfCancellationRequested();
@@ -291,12 +295,25 @@ public sealed class GitHubReleaseUpdater
             if (locked.Contains(fileName))
             {
                 File.WriteAllBytes(destination + ".new", bytes);
+                RestartRequired = true;
             }
             else
             {
                 var tempPath = destination + ".updating";
                 File.WriteAllBytes(tempPath, bytes);
-                File.Move(tempPath, destination, overwrite: true);
+                try
+                {
+                    File.Move(tempPath, destination, overwrite: true);
+                }
+                catch (Exception ex) when (
+                    ex is IOException or UnauthorizedAccessException)
+                {
+                    // 目标文件被运行中的进程锁定（例如已加载的 libs 程序集）：
+                    // 改走 .new 暂存，交给重启脚本在进程退出后统一替换，
+                    // 而不是让整次增量更新中断。
+                    RestartRequired = true;
+                    File.Move(tempPath, destination + ".new", overwrite: true);
+                }
             }
 
             applied++;
@@ -314,39 +331,62 @@ public sealed class GitHubReleaseUpdater
             Formatting.Indented);
         var manifestTemp = manifestPath + ".updating";
         File.WriteAllText(manifestTemp, manifestPayload, new UTF8Encoding(false));
-        File.Move(manifestTemp, manifestPath, overwrite: true);
+        try
+        {
+            File.Move(manifestTemp, manifestPath, overwrite: true);
+        }
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException)
+        {
+            RestartRequired = true;
+            File.Move(manifestTemp, manifestPath + ".new", overwrite: true);
+        }
         return true;
     }
 
-    /// <summary>写出重启脚本并让应用退出；脚本等进程结束后替换 .new 并重启。</summary>
+    /// <summary>写出重启辅助脚本并立即以独立进程启动。</summary>
+    /// <remarks>
+    /// 辅助进程按 PID 等待本应用退出，随后递归把所有 ``*.new`` 替换为正式
+    /// 文件、清理失败残留的 ``*.updating``，最后通过启动器重启应用。必须
+    /// 在本进程退出前启动，否则父进程结束后脚本永远不会执行。
+    /// </remarks>
     public void ScheduleRestart()
     {
-        var scriptPath = Path.Combine(_root, "update-restart.cmd");
+        var scriptPath = Path.Combine(_root, "update-restart.ps1");
         var launcher = Path.Combine(_root, "启动 MaaBanGDream.cmd");
+        var rootLiteral = _root.Replace("'", "''");
+        var launcherLiteral = launcher.Replace("'", "''");
+
         var script = new StringBuilder();
-        script.AppendLine("@echo off");
-        script.AppendLine(":waitloop");
-        script.AppendLine("tasklist /FI \"IMAGENAME eq MFAAvalonia.exe\" 2>NUL | find /I \"MFAAvalonia.exe\" >NUL");
-        script.AppendLine("if %ERRORLEVEL%==0 (");
-        script.AppendLine("  timeout /T 1 /NOBREAK >NUL");
-        script.AppendLine("  goto waitloop");
-        script.AppendLine(")");
-        foreach (var name in new[] { "MFAAvalonia.exe", "MFAAvalonia.dll", "MFAAvalonia.Core.dll" })
-        {
-            script.AppendLine($"if exist \"{name}.new\" move /Y \"{name}.new\" \"{name}\"");
-        }
-
-        if (File.Exists(launcher))
-        {
-            script.AppendLine("start \"\" \"启动 MaaBanGDream.cmd\"");
-        }
-        else
-        {
-            script.AppendLine("start \"\" \"MFAAvalonia.exe\"");
-        }
-
-        script.AppendLine("del \"%~f0\"");
+        script.AppendLine("param([int]$TargetPid)");
+        script.AppendLine("while (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 800 }");
+        script.AppendLine($"$root = '{rootLiteral}'");
+        script.AppendLine("foreach ($attempt in 1..5) {");
+        script.AppendLine("  $pending = @(Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Name -like '*.new' -or $_.Name -like '*.updating' })");
+        script.AppendLine("  if ($pending.Count -eq 0) { break }");
+        script.AppendLine("  foreach ($file in $pending) {");
+        script.AppendLine("    try {");
+        script.AppendLine("      if ($file.Name -like '*.new') {");
+        script.AppendLine("        $dest = $file.FullName.Substring(0, $file.FullName.Length - 4)");
+        script.AppendLine("        Move-Item -LiteralPath $file.FullName -Destination $dest -Force");
+        script.AppendLine("      } else {");
+        script.AppendLine("        Remove-Item -LiteralPath $file.FullName -Force");
+        script.AppendLine("      }");
+        script.AppendLine("    } catch { Start-Sleep -Milliseconds 600 }");
+        script.AppendLine("  }");
+        script.AppendLine("}");
+        script.AppendLine($"Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','\"{launcherLiteral}\"'");
         File.WriteAllText(scriptPath, script.ToString(), new UTF8Encoding(false));
+        // 独立进程，父进程退出后继续等待并完成替换；隐藏窗口避免打扰用户。
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden " +
+                        $"-File \"{scriptPath}\" -TargetPid {Environment.ProcessId}",
+            WorkingDirectory = _root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
     }
 
     private static string NormalizeEntryPath(string entryPath, string prefix)

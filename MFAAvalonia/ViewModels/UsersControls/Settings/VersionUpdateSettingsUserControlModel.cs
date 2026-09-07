@@ -443,10 +443,18 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
                 return;
             }
 
-            updater.ScheduleRestart();
-            ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
-            DispatcherHelper.RunOnMainThread(
-                () => Environment.Exit(0));
+            if (updater.RestartRequired)
+            {
+                updater.ScheduleRestart();
+                ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
+                DispatcherHelper.RunOnMainThread(
+                    () => Environment.Exit(0));
+            }
+            else
+            {
+                GitHubUpdateStatus = "更新完成，无需重启。";
+                ToastHelper.Info("更新完成", "已应用增量更新。");
+            }
         }
         catch (Exception ex)
         {
