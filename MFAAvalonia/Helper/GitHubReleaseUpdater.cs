@@ -183,7 +183,13 @@ public sealed class GitHubReleaseUpdater
         IProgress<string>? progress,
         CancellationToken ct)
     {
-        var assetName = $"MaaBanGDream-v{release.Version}-win-x64.zip";
+        // 运行库已解压到 runtime/python 时下载不含 350MB Python 归档的
+        // 更新包；运行库缺失（首次安装或用户误删）才下载完整包回退。
+        var runtimeReady = File.Exists(Path.Combine(
+            _root, "runtime", "python", "python.exe"));
+        var assetName = runtimeReady
+            ? $"MaaBanGDream-v{release.Version}-win-x64-update.zip"
+            : $"MaaBanGDream-v{release.Version}-win-x64.zip";
         var zipUrl = AssetUrl(release.Tag, assetName);
         var shaUrl = AssetUrl(release.Tag, assetName + ".sha256");
 
