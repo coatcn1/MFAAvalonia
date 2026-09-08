@@ -52,6 +52,9 @@ public sealed class GitHubReleaseUpdater
 
     public sealed record LatestRelease(string Tag, string Version);
 
+    /// <summary>最新 Release 的公告内容（tag、标题与简介 Markdown）。</summary>
+    public sealed record ReleaseAnnouncement(string Tag, string Name, string Body);
+
     /// <summary>
     /// 本地版本以 update-manifest.json 为准（最后一次完整应用成功才会写入），
     /// 找不到时依次回退 BUILD-INFO.json、interface.json，兼容旧版便携包。
@@ -110,6 +113,33 @@ public sealed class GitHubReleaseUpdater
         var tag = match.Groups["tag"].Value;
         var version = tag.TrimStart('v', 'V');
         return new LatestRelease(tag, version);
+    }
+
+    /// <summary>读取最新 Release 的 tag 与简介正文，用于主页更新公告。</summary>
+    /// <remarks>
+    /// 走未认证的 GitHub REST API（每 IP 每小时 60 次）；启动时只调用一次，
+    /// 失败时静默跳过公告，不影响更新检查与下载。
+    /// </remarks>
+    public async Task<ReleaseAnnouncement?> FetchLatestAnnouncementAsync(
+        CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"https://api.github.com/repos/{Repository}/releases/latest");
+        request.Headers.Accept.ParseAdd("application/vnd.github+json");
+        using var response = await Http.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+        var text = await response.Content.ReadAsStringAsync(ct);
+        var payload = JObject.Parse(text);
+        var tag = payload["tag_name"]?.ToString();
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+        return new ReleaseAnnouncement(
+            tag,
+            payload["name"]?.ToString() ?? tag,
+            payload["body"]?.ToString() ?? string.Empty);
     }
 
     public static bool IsNewer(string? latest, string? local)

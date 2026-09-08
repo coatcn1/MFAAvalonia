@@ -161,6 +161,8 @@ public static class ConfigurationKeys
     public const string EnableAutoUpdateResource = "EnableAutoUpdateResource";
     public const string EnableAutoUpdateMFA = "EnableAutoUpdateMFA";
     public const string EnableCheckVersion = "EnableCheckVersion";
+    /// <summary>已展示过公告的 GitHub Release tag；新 tag 的 release 简介只弹一次。</summary>
+    public const string GitHubAnnouncementLastTag = "GitHubAnnouncement.LastTag";
     public const string DownloadCDK = "DownloadCDK";
     public const string GitHubToken = "GitHubToken";
     public const string ProxyAddress = "ProxyAddress";

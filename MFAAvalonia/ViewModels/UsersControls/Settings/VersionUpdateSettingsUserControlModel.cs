@@ -8,8 +8,10 @@ using MFAAvalonia.Extensions;
 using MFAAvalonia.Extensions.MaaFW;
 using MFAAvalonia.Helper;
 using MFAAvalonia.Helper.Converters;
+using MFAAvalonia.Helper.ValueType;
 using MFAAvalonia.ViewModels.Other;
 using MFAAvalonia.ViewModels.Windows;
+using MFAAvalonia.Views.Windows;
 using System;
 using System.Collections.ObjectModel;
 using System.Threading;
@@ -241,7 +243,7 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
 
     [ObservableProperty] private bool _enableCheckVersion = ConfigurationManager.Current.GetValue(ConfigurationKeys.EnableCheckVersion, true);
 
-    [ObservableProperty] private bool _enableAutoUpdateResource = ConfigurationManager.Current.GetValue(ConfigurationKeys.EnableAutoUpdateResource, false);
+    [ObservableProperty] private bool _enableAutoUpdateResource = ConfigurationManager.Current.GetValue(ConfigurationKeys.EnableAutoUpdateResource, true);
 
     [ObservableProperty] private bool _enableAutoUpdateMFA = ConfigurationManager.Current.GetValue(ConfigurationKeys.EnableAutoUpdateMFA, false);
 
@@ -403,6 +405,19 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
             HasGitHubUpdate = GitHubReleaseUpdater.IsNewer(
                 latest.Version,
                 updater.LocalVersion);
+            if (HasGitHubUpdate)
+            {
+                // 标题栏显示“发现新版本”按钮，点击即走整包更新流程。
+                Instances.RootViewModel.WindowUpdateInfo =
+                    $"发现新版本 v{latest.Version}，点击更新";
+                Instances.RootViewModel.TempResourceUpdateAction =
+                    () => _ = ApplyGitHubUpdateAsync(force: false);
+            }
+            else
+            {
+                Instances.RootViewModel.WindowUpdateInfo = string.Empty;
+                Instances.RootViewModel.TempResourceUpdateAction = null;
+            }
             GitHubUpdateStatus = HasGitHubUpdate
                 ? $"发现新版本 v{latest.Version}（当前 {updater.LocalVersion}）"
                 : $"已是最新版本 v{latest.Version}";
@@ -420,6 +435,7 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
     private async Task StartupGitHubCheckAsync()
     {
         await CheckGitHubUpdateAsync();
+        await CheckGitHubAnnouncementAsync();
         if (!EnableAutoUpdateResource || !HasGitHubUpdate)
         {
             return;
@@ -432,6 +448,50 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
             return;
         }
         await ApplyGitHubUpdateAsync(force: false);
+    }
+
+    /// <summary>
+    /// 主页更新公告：读取最新 Release 的简介 Markdown，每个新 tag 只弹一次。
+    /// </summary>
+    private async Task CheckGitHubAnnouncementAsync()
+    {
+        try
+        {
+            var updater = GetUpdater();
+            if (updater is null)
+            {
+                return;
+            }
+            var announcement = await updater.FetchLatestAnnouncementAsync(
+                CancellationToken.None);
+            if (announcement is null || string.IsNullOrWhiteSpace(announcement.Body))
+            {
+                return;
+            }
+            var lastTag = ConfigurationManager.Current.GetValue(
+                ConfigurationKeys.GitHubAnnouncementLastTag,
+                string.Empty) ?? string.Empty;
+            if (string.Equals(lastTag, announcement.Tag, StringComparison.Ordinal))
+            {
+                return;
+            }
+            ConfigurationManager.Current.SetValue(
+                ConfigurationKeys.GitHubAnnouncementLastTag,
+                announcement.Tag);
+            DispatcherHelper.RunOnMainThread(() =>
+            {
+                var viewModel = new ChangelogViewModel
+                {
+                    Type = AnnouncementType.Release,
+                    AnnouncementInfo = announcement.Body,
+                };
+                new ChangelogView { DataContext = viewModel }.Show();
+            });
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Error($"获取 GitHub 更新公告失败：{ex.Message}", ex);
+        }
     }
 
     private async Task ApplyGitHubUpdateAsync(bool force)
@@ -473,9 +533,22 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
                 progress,
                 CancellationToken.None);
             updater.ScheduleRestart(zipPath);
-            ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
-            DispatcherHelper.RunOnMainThread(
-                () => Environment.Exit(0));
+            if (Instances.RootViewModel?.Idle == true)
+            {
+                ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
+                DispatcherHelper.RunOnMainThread(
+                    () => Environment.Exit(0));
+            }
+            else
+            {
+                // 下载期间用户可能已开始任务：不强制退出，重启辅助脚本会
+                // 在应用正常退出后完成覆盖解压并重启。
+                GitHubUpdateStatus =
+                    "更新包已下载完成；将在程序退出后自动应用并重启。";
+                ToastHelper.Info(
+                    "更新包已就绪",
+                    "为避免打断正在执行的任务，将在程序退出后自动应用更新。");
+            }
         }
         catch (Exception ex)
         {
