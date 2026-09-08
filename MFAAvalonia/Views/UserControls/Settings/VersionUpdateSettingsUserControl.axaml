@@ -461,7 +461,7 @@
                     <TextBlock
                         Margin="0,4,0,0"
                         Foreground="{DynamicResource SukiTextSecondaryColor}"
-                        Text="从 GitHub Releases 增量更新整个便携包，谱面等未变化内容不会重复下载。" />
+                        Text="从 GitHub Releases 整包下载更新：支持断点续传与 SHA256 校验，下载完成后自动重启应用。" />
                 </StackPanel>
                 <DockPanel>
                     <StackPanel

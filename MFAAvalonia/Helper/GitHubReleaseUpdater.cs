@@ -2,31 +2,38 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Semver;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace MFAAvalonia.Helper;
 
-/// <summary>从 GitHub Releases 增量更新整个 MaaBanGDream 便携包。</summary>
+/// <summary>从 GitHub Releases 整包更新 MaaBanGDream 便携包。</summary>
 /// <remarks>
-/// 只下载“内容发生变化”的条目：发布包根目录带 `update-manifest.json`
-/// （相对路径 → SHA256），更新器先按 HTTP Range 读取发布 zip 的中央目录和
-/// 清单条目，与本地清单 diff 后仅拉取差异条目的字节区间并逐条校验，
-/// 避免每次下载几百 MB 的本地谱面文件。
+/// 不再对发布 zip 做逐文件 Range 增量：整包下载到 temp/update 下的
+/// <c>.part</c>（支持断点续传），下载完成后与发布附带的
+/// <c>.zip.sha256</c> 校验一致，再写重启脚本让进程退出后覆盖解压。
+/// 本地版本以 update-manifest.json 为准——它只在一次完整应用成功后才被
+/// 替换，中断的半更新状态不会把版本误报成新版本。
 /// </remarks>
 public sealed class GitHubReleaseUpdater
 {
     public const string Repository = "coatcn1/MaaBanGDream";
 
-    private static readonly HttpClient Http = CreateClient();
+    private static readonly HttpClient Http = CreateClient(TimeSpan.FromSeconds(30));
+    // 大文件下载不能套 60 秒总超时：慢速网络下整包可能要几十分钟。
+    // 只给元数据请求短超时，下载体请求无总超时、由取消令牌和操作系统
+    // 套接字超时兜底。
+    private static readonly HttpClient DownloadHttp =
+        CreateClient(Timeout.InfiniteTimeSpan);
     private readonly string _root;
 
     public GitHubReleaseUpdater(string packageRoot)
@@ -34,66 +41,50 @@ public sealed class GitHubReleaseUpdater
         _root = packageRoot;
     }
 
-    private static HttpClient CreateClient()
+    private static HttpClient CreateClient(TimeSpan timeout)
     {
-        var client = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(60),
-        };
+        var client = new HttpClient { Timeout = timeout };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("MaaBanGDream-Updater");
         return client;
     }
 
     public string? LocalVersion { get; private set; }
 
-    /// <summary>本次应用是否暂存了 .new 文件，需要重启进程后才能完成替换。</summary>
-    public bool RestartRequired { get; private set; }
-
     public sealed record LatestRelease(string Tag, string Version);
 
-    public sealed record ZipEntry(
-        string Path,
-        long LocalHeaderOffset,
-        long CompressedSize,
-        long UncompressedSize,
-        ushort Method,
-        uint Crc32);
-
-    /// <summary>本地版本来自包根目录 interface.json；找不到时回退 BUILD-INFO.json。</summary>
+    /// <summary>
+    /// 本地版本以 update-manifest.json 为准（最后一次完整应用成功才会写入），
+    /// 找不到时依次回退 BUILD-INFO.json、interface.json，兼容旧版便携包。
+    /// </summary>
     public string? ReadLocalVersion()
     {
-        var interfacePath = Path.Combine(_root, "interface.json");
-        if (File.Exists(interfacePath))
+        foreach (var relative in new[]
         {
+            "update-manifest.json",
+            "BUILD-INFO.json",
+            "interface.json",
+        })
+        {
+            var path = Path.Combine(_root, relative);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
             try
             {
-                var payload = JsonConvert.DeserializeObject<JObject>(File.ReadAllText(interfacePath, Encoding.UTF8));
-                if (payload?["version"]?.ToString() is { Length: > 0 } version)
+                var payload = JObject.Parse(File.ReadAllText(path, Encoding.UTF8));
+                var version = payload["version"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(version))
                 {
                     return version;
                 }
             }
             catch
             {
-                // 忽略并回退 BUILD-INFO.json。
+                // 文件损坏时继续尝试下一个来源。
             }
         }
-
-        var buildInfoPath = Path.Combine(_root, "BUILD-INFO.json");
-        if (!File.Exists(buildInfoPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            var payload = JsonConvert.DeserializeObject<JObject>(File.ReadAllText(buildInfoPath, Encoding.UTF8));
-            return payload?["version"]?.ToString();
-        }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
     /// <summary>通过 releases/latest 的 302 重定向拿最新 tag，绕开 GitHub API 限流。</summary>
@@ -108,7 +99,7 @@ public sealed class GitHubReleaseUpdater
             HttpCompletionOption.ResponseHeadersRead,
             ct);
         var finalUri = response.RequestMessage?.RequestUri;
-        var match = System.Text.RegularExpressions.Regex.Match(
+        var match = Regex.Match(
             finalUri?.AbsoluteUri ?? string.Empty,
             @"/releases/tag/(?<tag>[^/?#]+)");
         if (!match.Success)
@@ -121,25 +112,21 @@ public sealed class GitHubReleaseUpdater
         return new LatestRelease(tag, version);
     }
 
-    /// <summary>比较 semver；latest 高于本地时返回 true。</summary>
     public static bool IsNewer(string? latest, string? local)
     {
         if (string.IsNullOrWhiteSpace(latest))
         {
             return false;
         }
-
         if (string.IsNullOrWhiteSpace(local))
         {
             return true;
         }
-
         if (!SemVersion.TryParse(Normalize(latest), SemVersionStyles.Any, out var newer) ||
             !SemVersion.TryParse(Normalize(local), SemVersionStyles.Any, out var older))
         {
             return false;
         }
-
         return newer.ComparePrecedenceTo(older) > 0;
     }
 
@@ -148,418 +135,271 @@ public sealed class GitHubReleaseUpdater
         var text = value.Trim().TrimStart('v', 'V');
         var core = text.Split('-')[0];
         var parts = core.Split('.');
-        var normalized = new List<string>(parts);
+        var normalized = new System.Collections.Generic.List<string>(parts);
         while (normalized.Count < 3)
         {
             normalized.Add("0");
         }
-
         return string.Join(".", normalized.Take(3));
     }
 
-    public sealed class UpdatePlan
-    {
-        public required string Tag { get; init; }
+    private static string AssetUrl(string tag, string assetName) =>
+        $"https://github.com/{Repository}/releases/download/{tag}/{assetName}";
 
-        public required string Version { get; init; }
-
-        public required string ZipUrl { get; init; }
-
-        public required List<ZipEntry> Entries { get; init; }
-
-        public required Dictionary<string, string> RemoteManifest { get; init; }
-
-        public required string PackagePrefix { get; init; }
-    }
-
-    /// <summary>拉取 zip 中央目录 + 远端清单，与本地清单 diff 出要下载的条目。</summary>
-    public async Task<UpdatePlan?> PlanAsync(
+    /// <summary>下载完整发布包；目标文件写入 &lt;root&gt;/temp/update/&lt;name&gt;.zip。</summary>
+    /// <returns>已通过 SHA256 校验的本地 zip 路径。</returns>
+    public async Task<string> DownloadAsync(
         LatestRelease release,
         IProgress<string>? progress,
         CancellationToken ct)
     {
-        var zipUrl =
-            $"https://github.com/{Repository}/releases/download/{release.Tag}/" +
-            $"MaaBanGDream-v{release.Version}-win-x64.zip";
-        var packagePrefix = $"MaaBanGDream-v{release.Version}-win-x64/";
+        var assetName = $"MaaBanGDream-v{release.Version}-win-x64.zip";
+        var zipUrl = AssetUrl(release.Tag, assetName);
+        var shaUrl = AssetUrl(release.Tag, assetName + ".sha256");
 
-        progress?.Report("正在读取发布包目录…");
-        var entries = await ListZipEntriesAsync(zipUrl, ct);
-        var manifestEntry = entries.FirstOrDefault(
-            entry => NormalizeEntryPath(entry.Path, packagePrefix) == "update-manifest.json");
-        if (manifestEntry is null)
+        progress?.Report("读取校验信息…");
+        var expectedSha256 = await FetchSha256Async(shaUrl, ct);
+
+        var updateDirectory = Path.Combine(_root, "temp", "update");
+        Directory.CreateDirectory(updateDirectory);
+        var partPath = Path.Combine(updateDirectory, assetName + ".part");
+        var zipPath = Path.Combine(updateDirectory, assetName);
+
+        // 清理其它版本的残留下载，只保留本次目标。
+        foreach (var stale in Directory.GetFiles(updateDirectory, "*.zip*"))
         {
-            progress?.Report("发布包缺少 update-manifest.json，无法增量更新。");
-            return null;
+            var name = Path.GetFileName(stale);
+            if (!name.StartsWith(assetName, StringComparison.OrdinalIgnoreCase))
+            {
+                try { File.Delete(stale); } catch { }
+            }
         }
 
-        var manifestBytes = await FetchEntryAsync(
+        await DownloadWithResumeAsync(
             zipUrl,
-            manifestEntry,
+            partPath,
             progress,
             ct);
-        var manifestText = Encoding.UTF8.GetString(manifestBytes);
-        var remoteManifest =
-            (JsonConvert.DeserializeObject<JObject>(manifestText)?["files"] ??
-             new JObject()).ToObject<Dictionary<string, string>>() ??
-            new Dictionary<string, string>();
 
-        var localManifestPath = Path.Combine(_root, "update-manifest.json");
-        var localManifest = new Dictionary<string, string>();
-        if (File.Exists(localManifestPath))
+        progress?.Report("校验下载文件…");
+        string actualSha256;
+        using (var hashStream = File.OpenRead(partPath))
         {
-            try
-            {
-                localManifest =
-                    (JsonConvert.DeserializeObject<JObject>(
-                        File.ReadAllText(localManifestPath, Encoding.UTF8))?["files"] ??
-                     new JObject()).ToObject<Dictionary<string, string>>() ??
-                    new Dictionary<string, string>();
-            }
-            catch
-            {
-                // 本地清单损坏时按全量处理。
-            }
+            actualSha256 = Convert.ToHexString(
+                SHA256.HashData(hashStream)).ToLowerInvariant();
+        }
+        if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            File.Delete(partPath);
+            throw new InvalidDataException(
+                "下载文件校验失败，已删除不完整文件；请重试，将重新下载。");
         }
 
-        var needed = new List<ZipEntry>();
-        foreach (var entry in entries)
-        {
-            var relative = NormalizeEntryPath(entry.Path, packagePrefix);
-            if (string.IsNullOrEmpty(relative) || relative.EndsWith("/", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (remoteManifest.TryGetValue(relative, out var remoteHash) &&
-                localManifest.TryGetValue(relative, out var localHash) &&
-                string.Equals(remoteHash, localHash, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            needed.Add(entry);
-        }
-
-        return new UpdatePlan
-        {
-            Tag = release.Tag,
-            Version = release.Version,
-            ZipUrl = zipUrl,
-            Entries = needed,
-            RemoteManifest = remoteManifest,
-            PackagePrefix = packagePrefix,
-        };
+        File.Move(partPath, zipPath, overwrite: true);
+        return zipPath;
     }
 
-    /// <summary>逐条下载并应用差异文件；锁定中的程序文件走 .new + 重启脚本。</summary>
-    public async Task<bool> ApplyAsync(
-        UpdatePlan plan,
+    /// <summary>
+    /// 带断点续传的下载。已存在的 .part 从断点继续；服务器不支持 Range、
+    /// 或断点与服务器长度不一致时回退成重新下载。写入 .part 保证中断后
+    /// 下次重试可以接着下，而不是从头再来。
+    /// </summary>
+    private async Task DownloadWithResumeAsync(
+        string url,
+        string partPath,
         IProgress<string>? progress,
         CancellationToken ct)
     {
-        var locked = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        long existing = File.Exists(partPath)
+            ? new FileInfo(partPath).Length
+            : 0;
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (existing > 0)
         {
-            "MFAAvalonia.exe",
-            "MFAAvalonia.dll",
-            "MFAAvalonia.Core.dll",
-        };
-        var applied = 0;
-        RestartRequired = false;
-        foreach (var entry in plan.Entries)
+            request.Headers.Range = new RangeHeaderValue(existing, null);
+        }
+
+        using var response = await DownloadHttp.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            ct);
+
+        FileMode mode;
+        long startOffset;
+        long? totalLength;
+        switch (response.StatusCode)
         {
-            ct.ThrowIfCancellationRequested();
-            var relative = NormalizeEntryPath(entry.Path, plan.PackagePrefix);
-            progress?.Report($"更新 {relative}（{applied + 1}/{plan.Entries.Count}）");
-            var bytes = await FetchEntryAsync(plan.ZipUrl, entry, progress, ct);
-            if (!plan.RemoteManifest.TryGetValue(relative, out var expectedHash))
-            {
-                continue;
-            }
+            case HttpStatusCode.PartialContent:
+                {
+                    var range = response.Content.Headers.ContentRange;
+                    if (range?.From != existing || range.Length < existing)
+                    {
+                        // 断点与服务器实际区间不一致（例如 .part 已损坏或被
+                        // 截断），丢弃旧文件重新完整下载。
+                        response.Dispose();
+                        File.Delete(partPath);
+                        existing = 0;
+                        request.Dispose();
+                        await DownloadWithResumeAsync(url, partPath, progress, ct);
+                        return;
+                    }
+                    mode = FileMode.Append;
+                    startOffset = existing;
+                    totalLength = range.Length;
+                    break;
+                }
+            case HttpStatusCode.RequestedRangeNotSatisfiable:
+                // .part 已经等于服务器长度（上次其实已下完）：直接复用，
+                // 由调用方做 SHA256 校验。
+                return;
+            case HttpStatusCode.OK:
+                mode = FileMode.Create;
+                startOffset = 0;
+                totalLength = response.Content.Headers.ContentLength;
+                break;
+            default:
+                response.EnsureSuccessStatusCode();
+                throw new HttpRequestException("无法连接 GitHub 下载更新包。");
+        }
 
-            var actualHash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-            {
-                progress?.Report($"校验失败：{relative}");
-                return false;
-            }
+        if (totalLength is { } alreadyComplete && alreadyComplete == startOffset)
+        {
+            // 已完整：由调用方校验后决定是否复用。
+            return;
+        }
 
-            var destination = Path.Combine(_root, relative.Replace('/', Path.DirectorySeparatorChar));
-            var directory = Path.GetDirectoryName(destination);
-            if (!string.IsNullOrEmpty(directory))
+        Directory.CreateDirectory(Path.GetDirectoryName(partPath)!);
+        // 杀毒软件等可能短暂占用刚写过的 .part；共享冲突时短暂等待重试。
+        FileStream file;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
             {
-                Directory.CreateDirectory(directory);
+                file = new FileStream(
+                    partPath,
+                    mode,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 1024 * 1024,
+                    useAsync: true);
+                break;
             }
-
-            var fileName = Path.GetFileName(destination);
-            if (locked.Contains(fileName))
+            catch (IOException) when (attempt < 15)
             {
-                File.WriteAllBytes(destination + ".new", bytes);
-                RestartRequired = true;
+                await Task.Delay(600, ct);
+            }
+        }
+        await using (file)
+        {
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var buffer = new byte[1024 * 1024];
+        long copied = 0;
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, ct);
+            if (read == 0)
+            {
+                break;
+            }
+            await file.WriteAsync(buffer.AsMemory(0, read), ct);
+            copied += read;
+            if (totalLength is { } totalBytes)
+            {
+                var received = startOffset + copied;
+                var percent = totalBytes == 0 ? 0 : received * 100.0 / totalBytes;
+                progress?.Report(
+                    $"下载中 {percent:0.0}%（{received / 1048576.0:0.0}/" +
+                    $"{totalBytes / 1048576.0:0.0} MB，支持断点续传）");
             }
             else
             {
-                var tempPath = destination + ".updating";
-                File.WriteAllBytes(tempPath, bytes);
-                try
-                {
-                    File.Move(tempPath, destination, overwrite: true);
-                }
-                catch (Exception ex) when (
-                    ex is IOException or UnauthorizedAccessException)
-                {
-                    // 目标文件被运行中的进程锁定（例如已加载的 libs 程序集）：
-                    // 改走 .new 暂存，交给重启脚本在进程退出后统一替换，
-                    // 而不是让整次增量更新中断。
-                    RestartRequired = true;
-                    File.Move(tempPath, destination + ".new", overwrite: true);
-                }
+                progress?.Report($"下载中 {(startOffset + copied) / 1048576.0:0.0} MB…");
             }
-
-            applied++;
         }
 
-        var manifestPath = Path.Combine(_root, "update-manifest.json");
-        var manifestPayload = JsonConvert.SerializeObject(
-            new JObject
-            {
-                ["version"] = plan.Version,
-                ["files"] = JObject.FromObject(
-                    plan.RemoteManifest.OrderBy(pair => pair.Key)
-                        .ToDictionary(pair => pair.Key, pair => pair.Value)),
-            },
-            Formatting.Indented);
-        var manifestTemp = manifestPath + ".updating";
-        File.WriteAllText(manifestTemp, manifestPayload, new UTF8Encoding(false));
-        try
+        if (totalLength is { } expectedBytes && startOffset + copied != expectedBytes)
         {
-            File.Move(manifestTemp, manifestPath, overwrite: true);
+            throw new IOException(
+                $"下载不完整：收到 {startOffset + copied} 字节，期望 {expectedBytes} 字节。");
         }
-        catch (Exception ex) when (
-            ex is IOException or UnauthorizedAccessException)
-        {
-            RestartRequired = true;
-            File.Move(manifestTemp, manifestPath + ".new", overwrite: true);
         }
-        return true;
     }
 
-    /// <summary>写出重启辅助脚本并立即以独立进程启动。</summary>
-    /// <remarks>
-    /// 辅助进程按 PID 等待本应用退出，随后递归把所有 ``*.new`` 替换为正式
-    /// 文件、清理失败残留的 ``*.updating``，最后通过启动器重启应用。必须
-    /// 在本进程退出前启动，否则父进程结束后脚本永远不会执行。
-    /// </remarks>
-    public void ScheduleRestart()
+    private async Task<string> FetchSha256Async(string url, CancellationToken ct)
+    {
+        using var response = await Http.GetAsync(url, ct);
+        response.EnsureSuccessStatusCode();
+        var text = await response.Content.ReadAsStringAsync(ct);
+        var match = Regex.Match(text, @"\b([0-9a-fA-F]{64})\b");
+        if (!match.Success)
+        {
+            throw new InvalidDataException("发布包缺少可解析的 SHA256 校验值。");
+        }
+        return match.Groups[1].Value.ToLowerInvariant();
+    }
+
+    /// <summary>写重启脚本并以独立进程启动：进程退出后覆盖解压并重启应用。</summary>
+    public void ScheduleRestart(string zipPath)
     {
         var scriptPath = Path.Combine(_root, "update-restart.ps1");
         var launcher = Path.Combine(_root, "启动 MaaBanGDream.cmd");
         var rootLiteral = _root.Replace("'", "''");
+        var zipLiteral = zipPath.Replace("'", "''");
         var launcherLiteral = launcher.Replace("'", "''");
 
         var script = new StringBuilder();
-        script.AppendLine("param([int]$TargetPid)");
+        script.AppendLine("param([int]$TargetPid, [string]$ZipPath)");
+        script.AppendLine("$log = Join-Path $env:TEMP 'maabangdream-update-restart.log'");
+        script.AppendLine("\"$(Get-Date -Format o) start target=$TargetPid zip=$ZipPath\" | Out-File -Append $log -Encoding utf8");
         script.AppendLine("while (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 800 }");
+        script.AppendLine("\"$(Get-Date -Format o) process exited\" | Out-File -Append $log -Encoding utf8");
         script.AppendLine($"$root = '{rootLiteral}'");
+        script.AppendLine($"$zipPath = '{zipLiteral}'");
+        script.AppendLine("$staging = Join-Path $root 'temp\\update\\staging'");
+        script.AppendLine("Add-Type -AssemblyName System.IO.Compression.FileSystem");
+        script.AppendLine("if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }");
+        script.AppendLine("New-Item -ItemType Directory -Force -Path $staging | Out-Null");
+        script.AppendLine("[System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $staging)");
+        script.AppendLine("\"$(Get-Date -Format o) extracted\" | Out-File -Append $log -Encoding utf8");
+        script.AppendLine("$inner = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1");
+        script.AppendLine("if ($inner) { $staging = $inner.FullName }");
+        script.AppendLine("if (-not (Test-Path -LiteralPath (Join-Path $staging 'MFAAvalonia.exe'))) { throw '更新包结构异常：缺少 MFAAvalonia.exe' }");
+        script.AppendLine("$preserve = @('config', 'profiles', 'debug', 'logs', 'screencap', '.maabangdream-backup')");
         script.AppendLine("foreach ($attempt in 1..5) {");
-        script.AppendLine("  $pending = @(Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Name -like '*.new' -or $_.Name -like '*.updating' })");
-        script.AppendLine("  if ($pending.Count -eq 0) { break }");
-        script.AppendLine("  foreach ($file in $pending) {");
-        script.AppendLine("    try {");
-        script.AppendLine("      if ($file.Name -like '*.new') {");
-        script.AppendLine("        $dest = $file.FullName.Substring(0, $file.FullName.Length - 4)");
-        script.AppendLine("        Move-Item -LiteralPath $file.FullName -Destination $dest -Force");
-        script.AppendLine("      } else {");
-        script.AppendLine("        Remove-Item -LiteralPath $file.FullName -Force");
-        script.AppendLine("      }");
-        script.AppendLine("    } catch { Start-Sleep -Milliseconds 600 }");
+        script.AppendLine("  $failed = $false");
+        script.AppendLine("  Get-ChildItem -LiteralPath $staging -Force | ForEach-Object {");
+        script.AppendLine("    if ($_.Name -in $preserve) { return }");
+        script.AppendLine("    try { Copy-Item -LiteralPath $_.FullName -Destination $root -Recurse -Force -ErrorAction Stop }");
+        script.AppendLine("    catch { $failed = $true; Start-Sleep -Milliseconds 600 }");
         script.AppendLine("  }");
+        script.AppendLine("  if (-not $failed) { break }");
         script.AppendLine("}");
-        script.AppendLine($"Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','\"{launcherLiteral}\"'");
-        File.WriteAllText(scriptPath, script.ToString(), new UTF8Encoding(false));
-        // 独立进程，父进程退出后继续等待并完成替换；隐藏窗口避免打扰用户。
+        script.AppendLine("\"$(Get-Date -Format o) overlay done\" | Out-File -Append $log -Encoding utf8");
+        script.AppendLine("Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue");
+        script.AppendLine("Remove-Item -LiteralPath (Join-Path $root 'temp\\update\\staging') -Recurse -Force -ErrorAction SilentlyContinue");
+        script.AppendLine("\"$(Get-Date -Format o) launching $root\" | Out-File -Append $log -Encoding utf8");
+        script.AppendLine(
+            $"Start-Process -FilePath 'cmd.exe' " +
+            $"-WorkingDirectory '{rootLiteral}' " +
+            $"-ArgumentList '/c','\"{launcherLiteral}\"'");
+        script.AppendLine("\"$(Get-Date -Format o) launch issued\" | Out-File -Append $log -Encoding utf8");
+        // 自删必须放在最后：Windows PowerShell 按需读取脚本文件，先删
+        // 自己会丢掉随后的启动器重启行。
+        script.AppendLine("Remove-Item -LiteralPath (Join-Path $root 'update-restart.ps1') -Force -ErrorAction SilentlyContinue");
+        // Windows PowerShell 5.1 对无 BOM 的 .ps1 按系统 ANSI(GBK) 解码，
+        // 中文启动器文件名会被读成乱码导致 cmd /c 静默失败；必须写 BOM。
+        File.WriteAllText(scriptPath, script.ToString(), new UTF8Encoding(true));
         Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden " +
-                        $"-File \"{scriptPath}\" -TargetPid {Environment.ProcessId}",
+            Arguments =
+                $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden " +
+                $"-File \"{scriptPath}\" -TargetPid {Environment.ProcessId} " +
+                $"-ZipPath \"{zipPath}\"",
             WorkingDirectory = _root,
             UseShellExecute = false,
             CreateNoWindow = true,
         });
-    }
-
-    private static string NormalizeEntryPath(string entryPath, string prefix)
-    {
-        var normalized = entryPath.Replace('\\', '/');
-        if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = normalized[prefix.Length..];
-        }
-
-        return normalized.TrimStart('/');
-    }
-
-    private async Task<List<ZipEntry>> ListZipEntriesAsync(
-        string zipUrl,
-        CancellationToken ct)
-    {
-        // 1) 先拿到总大小，再用显式区间拉取末尾 64KB 找 EOCD。
-        // GitHub 的资产 CDN 不支持 `bytes=-N` 后缀区间，但支持显式起止区间。
-        var totalSize = await GetContentLengthAsync(zipUrl, ct);
-        var eocdStart = Math.Max(0, totalSize - 65557);
-        var eocdBytes = await RangeReadAsync(
-            zipUrl,
-            eocdStart,
-            totalSize - eocdStart,
-            ct);
-        var eocdIndex = FindSignature(eocdBytes, 0x06054b50);
-        if (eocdIndex < 0)
-        {
-            throw new InvalidDataException("无法定位 ZIP 中央目录（EOCD）。");
-        }
-
-        var cdOffset = (long)BitConverter.ToUInt32(eocdBytes, eocdIndex + 16);
-        var cdSize = (long)BitConverter.ToUInt32(eocdBytes, eocdIndex + 12);
-        var cdCount = BitConverter.ToUInt16(eocdBytes, eocdIndex + 10);
-        var cdBytes = await RangeReadAsync(zipUrl, cdOffset, cdSize, ct);
-
-        var entries = new List<ZipEntry>(cdCount);
-        var cursor = 0;
-        for (var i = 0; i < cdCount; i++)
-        {
-            var signature = BitConverter.ToUInt32(cdBytes, cursor);
-            if (signature != 0x02014b50)
-            {
-                throw new InvalidDataException("ZIP 中央目录条目签名异常。");
-            }
-
-            var method = BitConverter.ToUInt16(cdBytes, cursor + 10);
-            var crc = BitConverter.ToUInt32(cdBytes, cursor + 16);
-            var compressedSize = BitConverter.ToUInt32(cdBytes, cursor + 20);
-            var uncompressedSize = BitConverter.ToUInt32(cdBytes, cursor + 24);
-            var nameLength = BitConverter.ToUInt16(cdBytes, cursor + 28);
-            var extraLength = BitConverter.ToUInt16(cdBytes, cursor + 30);
-            var commentLength = BitConverter.ToUInt16(cdBytes, cursor + 32);
-            var localHeaderOffset = BitConverter.ToUInt32(cdBytes, cursor + 42);
-            var name = Encoding.UTF8.GetString(cdBytes, cursor + 46, nameLength);
-            entries.Add(new ZipEntry(
-                name,
-                localHeaderOffset,
-                compressedSize,
-                uncompressedSize,
-                method,
-                crc));
-            cursor += 46 + nameLength + extraLength + commentLength;
-        }
-
-        return entries;
-    }
-
-    private async Task<long> GetContentLengthAsync(string zipUrl, CancellationToken ct)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, zipUrl);
-        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
-        using var response = await Http.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            ct);
-        response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentRange is { HasLength: true } contentRange &&
-            contentRange.Length.HasValue)
-        {
-            return contentRange.Length.Value;
-        }
-
-        if (response.Content.Headers.ContentLength is { } contentLength && contentLength > 0)
-        {
-            return contentLength;
-        }
-
-        throw new InvalidDataException("无法确定发布包大小。");
-    }
-
-    private async Task<byte[]> FetchEntryAsync(
-        string zipUrl,
-        ZipEntry entry,
-        IProgress<string>? progress,
-        CancellationToken ct)
-    {
-        // 先取本地头（最多 512 字节）得到文件名长度，再按中央目录的压缩大小
-        // 精确拉取条目数据，避免多下载相邻条目。
-        var headerBytes = await RangeReadAsync(
-            zipUrl,
-            entry.LocalHeaderOffset,
-            Math.Min(512, 64 * 1024 * 1024),
-            ct);
-        if (BitConverter.ToUInt32(headerBytes, 0) != 0x04034b50)
-        {
-            throw new InvalidDataException($"条目 {entry.Path} 本地头签名异常。");
-        }
-
-        var nameLength = BitConverter.ToUInt16(headerBytes, 26);
-        var extraLength = BitConverter.ToUInt16(headerBytes, 28);
-        var dataOffset = 30L + nameLength + extraLength;
-        var compressed = await RangeReadAsync(
-            zipUrl,
-            entry.LocalHeaderOffset + dataOffset,
-            entry.CompressedSize,
-            ct);
-        return entry.Method switch
-        {
-            0 => compressed,
-            8 => Inflate(compressed, entry.UncompressedSize),
-            _ => throw new InvalidDataException($"不支持的压缩方式：{entry.Method}"),
-        };
-    }
-
-    private static byte[] Inflate(byte[] compressed, long expectedSize)
-    {
-        using var input = new MemoryStream(compressed, writable: false);
-        using var deflate = new DeflateStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        deflate.CopyTo(output);
-        var result = output.ToArray();
-        if (expectedSize > 0 && result.LongLength != expectedSize)
-        {
-            throw new InvalidDataException("解压大小与 ZIP 目录记录不一致。");
-        }
-
-        return result;
-    }
-
-    private static async Task<byte[]> RangeReadAsync(
-        string url,
-        long? offset,
-        long length,
-        CancellationToken ct)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        if (offset.HasValue)
-        {
-            var end = offset.Value + length - 1;
-            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(
-                offset.Value,
-                end);
-        }
-        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
-        using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var output = new MemoryStream();
-        await stream.CopyToAsync(output, ct);
-        return output.ToArray();
-    }
-
-    private static int FindSignature(byte[] buffer, uint signature)
-    {
-        for (var i = buffer.Length - 4; i >= 0; i--)
-        {
-            if (BitConverter.ToUInt32(buffer, i) == signature)
-            {
-                return i;
-            }
-        }
-
-        return -1;
     }
 }

@@ -278,16 +278,10 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
     partial void OnProxyTypeChanged(UpdateProxyType value) => HandlePropertyChanged(ConfigurationKeys.ProxyType, value.ToString());
 
     [RelayCommand]
-    private void UpdateResource()
-    {
-        VersionChecker.UpdateResourceAsync();
-    }
+    private void UpdateResource() => _ = ApplyGitHubUpdateAsync(force: false);
 
     [RelayCommand]
-    private void RedownloadResource()
-    {
-        VersionChecker.UpdateResourceAsync("v0.0.0");
-    }
+    private void RedownloadResource() => _ = ApplyGitHubUpdateAsync(force: true);
 
     [RelayCommand]
     private async Task UpdateResourceFromLocalPackage()
@@ -319,10 +313,7 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void CheckResourceUpdate()
-    {
-        VersionChecker.CheckResourceVersionAsync();
-    }
+    private void CheckResourceUpdate() => _ = CheckGitHubUpdateAsync();
 
     [RelayCommand]
     private void UpdateMFA()
@@ -362,10 +353,17 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
 
     private GitHubReleaseUpdater.LatestRelease? _gitHubLatest;
 
-    /// <summary>启动时后台静默检查一次；结果只显示在设置页，不打断用户。</summary>
+    /// <summary>
+    /// 启动时后台静默检查一次；结果只显示在设置页，不打断用户。
+    /// 开启“自动更新资源”且应用空闲时，检查到新版本就自动整包更新。
+    /// </summary>
     public void StartGitHubUpdateCheck()
     {
-        _ = CheckGitHubUpdateAsync();
+        if (!EnableCheckVersion && !EnableAutoUpdateResource)
+        {
+            return;
+        }
+        _ = StartupGitHubCheckAsync();
     }
 
     [RelayCommand]
@@ -401,6 +399,7 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
             }
 
             _gitHubLatest = latest;
+            ResourceVersion = updater.LocalVersion ?? string.Empty;
             HasGitHubUpdate = GitHubReleaseUpdater.IsNewer(
                 latest.Version,
                 updater.LocalVersion);
@@ -416,10 +415,34 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
     }
 
     [RelayCommand]
-    private async Task ApplyGitHubUpdate()
+    private Task ApplyGitHubUpdate() => ApplyGitHubUpdateAsync(force: false);
+
+    private async Task StartupGitHubCheckAsync()
+    {
+        await CheckGitHubUpdateAsync();
+        if (!EnableAutoUpdateResource || !HasGitHubUpdate)
+        {
+            return;
+        }
+        // 自动应用只在空闲时进行，避免打断正在运行的任务；繁忙时下次
+        // 启动再检查。
+        if (Instances.RootViewModel?.Idle != true)
+        {
+            GitHubUpdateStatus = "发现新版本，但当前正在执行任务，已推迟自动更新。";
+            return;
+        }
+        await ApplyGitHubUpdateAsync(force: false);
+    }
+
+    private async Task ApplyGitHubUpdateAsync(bool force)
     {
         var updater = GetUpdater();
-        if (updater is null || _gitHubLatest is null || !HasGitHubUpdate)
+        if (updater is null)
+        {
+            GitHubUpdateStatus = "无法确定安装目录，无法更新。";
+            return;
+        }
+        if (!force && (_gitHubLatest is null || !HasGitHubUpdate))
         {
             GitHubUpdateStatus = "当前没有可用的新版本。";
             return;
@@ -428,33 +451,31 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
         IsApplyingGitHubUpdate = true;
         try
         {
+            var latest = _gitHubLatest;
+            if (latest is null || force)
+            {
+                latest = await updater.CheckLatestAsync(CancellationToken.None);
+                if (latest is null)
+                {
+                    GitHubUpdateStatus = "无法连接 GitHub，请稍后再试。";
+                    return;
+                }
+                _gitHubLatest = latest;
+                HasGitHubUpdate = GitHubReleaseUpdater.IsNewer(
+                    latest.Version,
+                    updater.LocalVersion);
+            }
+
             var progress = new Progress<string>(
                 text => DispatcherHelper.RunOnMainThread(() => GitHubUpdateStatus = text));
-            var plan = await updater.PlanAsync(_gitHubLatest, progress, CancellationToken.None);
-            if (plan is null)
-            {
-                return;
-            }
-
-            var ok = await updater.ApplyAsync(plan, progress, CancellationToken.None);
-            if (!ok)
-            {
-                GitHubUpdateStatus = "更新失败：文件校验未通过，已中止。";
-                return;
-            }
-
-            if (updater.RestartRequired)
-            {
-                updater.ScheduleRestart();
-                ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
-                DispatcherHelper.RunOnMainThread(
-                    () => Environment.Exit(0));
-            }
-            else
-            {
-                GitHubUpdateStatus = "更新完成，无需重启。";
-                ToastHelper.Info("更新完成", "已应用增量更新。");
-            }
+            var zipPath = await updater.DownloadAsync(
+                latest,
+                progress,
+                CancellationToken.None);
+            updater.ScheduleRestart(zipPath);
+            ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
+            DispatcherHelper.RunOnMainThread(
+                () => Environment.Exit(0));
         }
         catch (Exception ex)
         {
