@@ -416,9 +416,8 @@ public sealed class GitHubReleaseUpdater
         script.AppendLine("Remove-Item -LiteralPath (Join-Path $root 'temp\\update\\staging') -Recurse -Force -ErrorAction SilentlyContinue");
         script.AppendLine("\"$(Get-Date -Format o) launching $root\" | Out-File -Append $log -Encoding utf8");
         script.AppendLine(
-            $"Start-Process -FilePath 'cmd.exe' " +
-            $"-WorkingDirectory '{rootLiteral}' " +
-            $"-ArgumentList '/c','\"{launcherLiteral}\"'");
+            $"Start-Process -FilePath '{launcherLiteral}' " +
+            $"-WorkingDirectory '{rootLiteral}'");
         script.AppendLine("\"$(Get-Date -Format o) launch issued\" | Out-File -Append $log -Encoding utf8");
         // 自删必须放在最后：Windows PowerShell 按需读取脚本文件，先删
         // 自己会丢掉随后的启动器重启行。
