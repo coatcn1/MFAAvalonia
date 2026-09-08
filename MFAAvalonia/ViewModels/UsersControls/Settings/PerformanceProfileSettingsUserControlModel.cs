@@ -588,7 +588,7 @@ public sealed class PerformanceProfileItem
             if (env == null) return "—";
             var tap = env["tap_effect"]?.ToString() ?? "—";
             var skin = env["note_skin_type"]?.ToString() ?? "—";
-            return $"TAP {tap} · TYPE {skin}";
+            return $"NOTE {skin} · TAP {tap}";
         }
     }
     public string EngineText
