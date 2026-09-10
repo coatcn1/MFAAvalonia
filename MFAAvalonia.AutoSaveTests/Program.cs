@@ -1,6 +1,10 @@
 using MFAAvalonia.ViewModels.UsersControls.Settings;
+using MFAAvalonia.Helper;
 using Newtonsoft.Json.Linq;
 using System.Reflection;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 
 static void Assert(bool condition, string message)
 {
@@ -240,6 +244,165 @@ static void ApplicationBrandingUsesProjectName()
         $"unexpected application icon: {MFAAvalonia.Helper.IconHelper.DefaultBrandIconUri}");
 }
 
+static void NativeGitHubUpdaterSelectsPortablePackageSafely()
+{
+    var assets = new[]
+    {
+        new VersionChecker.GitHubReleaseAsset("MaaBanGDream-v1.3.6-win-x64-update.zip.sha256", "update-sha", ""),
+        new VersionChecker.GitHubReleaseAsset("MaaBanGDream-v1.3.6-win-x64.zip", "full", "full-hash"),
+        new VersionChecker.GitHubReleaseAsset("MaaBanGDream-v1.3.6-win-x64.zip.sha256", "full-sha", ""),
+        new VersionChecker.GitHubReleaseAsset("MaaBanGDream-v1.3.6-win-x64-update.zip", "update", "update-hash"),
+    };
+    var runtimeFree = VersionChecker.SelectGitHubReleaseAsset(assets, "win", "win", "x64", true);
+    Assert(runtimeFree.Url == "update", $"expected runtime-free update archive, got {runtimeFree.Name}");
+    var full = VersionChecker.SelectGitHubReleaseAsset(assets, "win", "win", "x64", false);
+    Assert(full.Url == "full", $"expected full archive when runtime is missing, got {full.Name}");
+}
+
+static void NativeGitHubUpdaterRejectsAmbiguousArchives()
+{
+    var assets = new[]
+    {
+        new VersionChecker.GitHubReleaseAsset("one-win-x64-update.zip", "one", ""),
+        new VersionChecker.GitHubReleaseAsset("two-win-x64-update.zip", "two", ""),
+    };
+    try
+    {
+        VersionChecker.SelectGitHubReleaseAsset(assets, "win", "win", "x64", true);
+        throw new InvalidOperationException("ambiguous archives were accepted");
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("不唯一", StringComparison.Ordinal))
+    {
+    }
+}
+
+static void GitHubOnlyResourcesCoerceLegacyMirrorSelection()
+{
+    Assert(VersionChecker.NormalizeResourceDownloadSourceIndex(1, null) == 0,
+        "resource without RID must use GitHub");
+    Assert(VersionChecker.NormalizeResourceDownloadSourceIndex(1, "resource-rid") == 1,
+        "resource with RID should retain Mirror selection");
+}
+
+static async Task<(bool Success, string Path)> InvokeNativeDownloadAsync(string url, string path)
+{
+    using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+    return await VersionChecker.DownloadFileWithClientAsync(httpClient, url, path);
+}
+
+static async Task<string> ServeDownloadOnceAsync(
+    TcpListener listener,
+    byte[] payload,
+    bool honorRange,
+    bool alreadyComplete = false)
+{
+    using var client = await listener.AcceptTcpClientAsync();
+    await using var stream = client.GetStream();
+    using var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, true);
+    var headers = new StringBuilder();
+    string? line;
+    while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync()))
+        headers.AppendLine(line);
+    var headerText = headers.ToString();
+    var rangeMatch = System.Text.RegularExpressions.Regex.Match(
+        headerText,
+        @"Range:\s*bytes=(\d+)-",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    var start = rangeMatch.Success ? int.Parse(rangeMatch.Groups[1].Value) : 0;
+    if (alreadyComplete)
+    {
+        var rangeResponse = Encoding.ASCII.GetBytes(
+            $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{payload.Length}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        await stream.WriteAsync(rangeResponse);
+        return headerText;
+    }
+    var responseStart = honorRange ? start : 0;
+    var status = honorRange && start > 0 ? "206 Partial Content" : "200 OK";
+    var responseHeaders = new StringBuilder()
+        .Append($"HTTP/1.1 {status}\r\n")
+        .Append($"Content-Length: {payload.Length - responseStart}\r\n");
+    if (status.StartsWith("206", StringComparison.Ordinal))
+        responseHeaders.Append($"Content-Range: bytes {responseStart}-{payload.Length - 1}/{payload.Length}\r\n");
+    responseHeaders.Append("Connection: close\r\n\r\n");
+    var headerBytes = Encoding.ASCII.GetBytes(responseHeaders.ToString());
+    await stream.WriteAsync(headerBytes);
+    await stream.WriteAsync(payload.AsMemory(responseStart));
+    return headerText;
+}
+
+static async Task NativeDownloaderResumesAndRestartsSafelyAsync()
+{
+    var payload = Encoding.UTF8.GetBytes("native updater resumable payload");
+    foreach (var honorRange in new[] { true, false })
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var tempRoot = Path.Combine(Path.GetTempPath(), $"mfa-download-test-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRoot);
+            var target = Path.Combine(tempRoot, "payload.zip");
+            await File.WriteAllBytesAsync(target + ".part", payload[..7]);
+            var serverTask = ServeDownloadOnceAsync(listener, payload, honorRange);
+            var result = await InvokeNativeDownloadAsync(
+                $"http://127.0.0.1:{port}/payload.zip",
+                target).WaitAsync(TimeSpan.FromSeconds(10));
+            var requestHeaders = await serverTask.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert(requestHeaders.Contains("Range: bytes=7-", StringComparison.OrdinalIgnoreCase),
+                "resume request did not contain the expected Range header");
+            Assert(result.Success && File.Exists(target), "native downloader did not finalize the archive");
+            Assert((await File.ReadAllBytesAsync(target)).SequenceEqual(payload),
+                honorRange ? "206 resume produced incorrect bytes" : "200 restart produced incorrect bytes");
+            Directory.Delete(tempRoot, true);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    var completedListener = new TcpListener(IPAddress.Loopback, 0);
+    completedListener.Start();
+    try
+    {
+        var port = ((IPEndPoint)completedListener.LocalEndpoint).Port;
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"mfa-download-complete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        var target = Path.Combine(tempRoot, "payload.zip");
+        await File.WriteAllBytesAsync(target + ".part", payload);
+        var serverTask = ServeDownloadOnceAsync(completedListener, payload, true, alreadyComplete: true);
+        var result = await InvokeNativeDownloadAsync(
+            $"http://127.0.0.1:{port}/payload.zip",
+            target).WaitAsync(TimeSpan.FromSeconds(10));
+        var requestHeaders = await serverTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert(requestHeaders.Contains($"Range: bytes={payload.Length}-", StringComparison.OrdinalIgnoreCase),
+            "completed partial file did not send the expected Range header");
+        Assert(result.Success && (await File.ReadAllBytesAsync(target)).SequenceEqual(payload),
+            "416 completion did not finalize the existing partial file");
+        Directory.Delete(tempRoot, true);
+    }
+    finally
+    {
+        completedListener.Stop();
+    }
+}
+
+static async Task NativeDownloaderRejectsShaMismatchAsync()
+{
+    var tempPath = Path.Combine(Path.GetTempPath(), $"mfa-sha-test-{Guid.NewGuid():N}.zip");
+    await File.WriteAllBytesAsync(tempPath, Encoding.UTF8.GetBytes("payload"));
+    try
+    {
+        Assert(!await VersionChecker.VerifyFileSha256Async(tempPath, new string('0', 64)),
+            "SHA256 mismatch was accepted");
+    }
+    finally
+    {
+        File.Delete(tempPath);
+    }
+}
+
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
@@ -249,4 +412,9 @@ RuntimeOptionsIncludeProcessCleanupSwitch();
 CalibrationRecordsReadNestedSessionResults();
 ChartCatalogSummaryIsReadable();
 ApplicationBrandingUsesProjectName();
-Console.WriteLine("MFA auto-save tests passed: 9 (including chart catalog status and branding)");
+NativeGitHubUpdaterSelectsPortablePackageSafely();
+NativeGitHubUpdaterRejectsAmbiguousArchives();
+GitHubOnlyResourcesCoerceLegacyMirrorSelection();
+await NativeDownloaderResumesAndRestartsSafelyAsync();
+await NativeDownloaderRejectsShaMismatchAsync();
+Console.WriteLine("MFA auto-save tests passed: 16 (including native GitHub updater download semantics)");

@@ -53,6 +53,70 @@ public static class VersionChecker
     private const string ResourceUpdateDryRunEnv = "MFA_DEBUG_UPDATE_RESOURCE_DRY_RUN";
     private const string ResourceUpdateKeepArtifactsEnv = "MFA_DEBUG_UPDATE_RESOURCE_KEEP";
 
+    public sealed record GitHubReleaseAsset(string Name, string Url, string Sha256);
+
+    public static bool SupportsMirrorResourceSource(string? resourceId) =>
+        !string.IsNullOrWhiteSpace(resourceId);
+
+    public static int NormalizeResourceDownloadSourceIndex(int requestedIndex, string? resourceId) =>
+        requestedIndex == 1 && SupportsMirrorResourceSource(resourceId) ? 1 : 0;
+
+    public static GitHubReleaseAsset SelectGitHubReleaseAsset(
+        IEnumerable<GitHubReleaseAsset> assets,
+        string targetOS,
+        string targetFamily,
+        string targetArch,
+        bool runtimeAvailable)
+    {
+        var candidates = assets
+            .Where(asset => !string.IsNullOrWhiteSpace(asset.Name)
+                            && !string.IsNullOrWhiteSpace(asset.Url)
+                            && IsSupportedArchiveAsset(asset.Name))
+            .Select(asset => new
+            {
+                Asset = asset,
+                Priority = GetAssetPriority(asset.Name, targetOS, targetFamily, targetArch)
+                           + GetPortablePackagePriority(asset.Name, runtimeAvailable)
+            })
+            .Where(item => item.Priority > 0)
+            .OrderByDescending(item => item.Priority)
+            .ToList();
+
+        if (candidates.Count == 0)
+            throw new InvalidOperationException("GitHub Release 中没有适用于当前系统的更新归档。");
+
+        var bestPriority = candidates[0].Priority;
+        var best = candidates.Where(item => item.Priority == bestPriority).ToList();
+        if (best.Count != 1)
+        {
+            var names = string.Join(", ", best.Select(item => item.Asset.Name));
+            throw new InvalidOperationException($"GitHub Release 更新归档不唯一：{names}");
+        }
+        return best[0].Asset;
+    }
+
+    private static bool IsSupportedArchiveAsset(string fileName)
+    {
+        var normalized = fileName.ToLowerInvariant();
+        return !normalized.EndsWith(".sha256", StringComparison.Ordinal)
+               && (normalized.EndsWith(".zip", StringComparison.Ordinal)
+                   || normalized.EndsWith(".7z", StringComparison.Ordinal)
+                   || normalized.EndsWith(".tar.gz", StringComparison.Ordinal)
+                   || normalized.EndsWith(".tgz", StringComparison.Ordinal));
+    }
+
+    private static int GetPortablePackagePriority(string fileName, bool runtimeAvailable)
+    {
+        var normalized = fileName.ToLowerInvariant();
+        var isRuntimeFreeUpdate = Regex.IsMatch(
+            normalized,
+            @"(?:^|[-_.])update(?:[-_.]|$)",
+            RegexOptions.CultureInvariant);
+        if (!runtimeAvailable && isRuntimeFreeUpdate)
+            return -10000;
+        return runtimeAvailable && isRuntimeFreeUpdate ? 1000 : 500;
+    }
+
     public enum VersionType
     {
         Alpha = 0,
@@ -659,6 +723,17 @@ public static class VersionChecker
         }
         if (!string.IsNullOrWhiteSpace(sha256) && !sha256Verified)
         {
+            if (!isLocalPackage)
+            {
+                try
+                {
+                    File.Delete(tempZipFilePath);
+                }
+                catch (Exception ex)
+                {
+                    LoggerHelper.Warning($"删除校验失败的更新包失败：文件={tempZipFilePath}，原因={ex.Message}");
+                }
+            }
             Dismiss(sukiToast);
             ToastHelper.Warn(LangKeys.Warning.ToLocalization(), LangKeys.HashVerificationFailed.ToLocalization());
             Instances.RootViewModel.SetUpdating(false);
@@ -752,6 +827,33 @@ public static class VersionChecker
             isIncrementalPackage,
             debugEnabled,
             dryRun);
+
+        if (dryRun)
+        {
+            SetProgress(progress, 100);
+            SetStatusText(textBlock, downloadSpeedTextBlock, "UpdateResource DryRun completed");
+            LoggerHelper.Warning($"[UpdateResourceDebug] 已启用 DryRun，跳过实际覆盖与重启。tempExtractDir={tempExtractDir}");
+            ToastHelper.Info("UpdateResource DryRun 已完成", tempExtractDir, 5000);
+            Instances.RootViewModel.SetUpdating(false);
+            if (closeDialog)
+                Dismiss(sukiToast);
+            action?.Invoke();
+            return;
+        }
+
+        if (containsCoreApplicationFiles)
+        {
+            SetStatusText(textBlock, downloadSpeedTextBlock, "更新包验证完成，正在启动外部更新器");
+            SetProgress(progress, 100);
+            LoggerHelper.Info($"更新包包含核心程序文件，将在 MFA 退出后覆盖安装目录：源目录={originPath}，目标目录={AppPaths.InstallRoot}");
+            await ApplyPortablePackageUpdate(
+                originPath,
+                AppPaths.InstallRoot,
+                OperatingSystem.IsWindows() ? "启动 MaaBanGDream.cmd" : "MFAAvalonia",
+                "update-manifest.json");
+            return;
+        }
+
         LoggerHelper.Info((isGithub || isFull || currentVersion.Equals("v0.0.0", StringComparison.OrdinalIgnoreCase)) ? "全量更新" : "增量更新");
         if (isGithub || isFull || currentVersion.Equals("v0.0.0", StringComparison.OrdinalIgnoreCase))
         {
@@ -879,19 +981,6 @@ public static class VersionChecker
 
 
         SetProgress(progress, 1);
-
-        if (dryRun)
-        {
-            SetProgress(progress, 100);
-            SetStatusText(textBlock, downloadSpeedTextBlock, "UpdateResource DryRun completed");
-            LoggerHelper.Warning($"[UpdateResourceDebug] 已启用 DryRun，跳过实际覆盖与重启。tempExtractDir={tempExtractDir}");
-            ToastHelper.Info("UpdateResource DryRun 已完成", tempExtractDir, 5000);
-            Instances.RootViewModel.SetUpdating(false);
-            if (closeDialog)
-                Dismiss(sukiToast);
-            action?.Invoke();
-            return;
-        }
 
         var di = new DirectoryInfo(originPath);
         if (di.Exists)
@@ -1735,6 +1824,56 @@ public static class VersionChecker
     // 处理含空格的参数
     private static string EscapeArgument(string arg) => $"\"{arg.Replace("\"", "\\\"")}\"";
 
+    private static async Task ApplyPortablePackageUpdate(
+        string source,
+        string target,
+        string launcher,
+        string manifest)
+    {
+        source = Path.GetFullPath(source);
+        target = Path.GetFullPath(target);
+        var installedUpdaterPath = FindUpdaterExecutablePath(AppContext.BaseDirectory);
+        if (!File.Exists(installedUpdaterPath))
+            throw new FileNotFoundException("更新程序源文件未找到", installedUpdaterPath);
+
+        var detachedUpdaterDirectory = Path.Combine(
+            AppPaths.TempResourceDirectory,
+            $"portable-updater-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(detachedUpdaterDirectory);
+        var detachedUpdaterPath = Path.Combine(
+            detachedUpdaterDirectory,
+            Path.GetFileName(installedUpdaterPath));
+        File.Copy(installedUpdaterPath, detachedUpdaterPath, true);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = detachedUpdaterPath,
+            WorkingDirectory = detachedUpdaterDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+        startInfo.ArgumentList.Add("--apply-package");
+        startInfo.ArgumentList.Add(source);
+        startInfo.ArgumentList.Add("--target");
+        startInfo.ArgumentList.Add(target);
+        startInfo.ArgumentList.Add("--parent-pid");
+        startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+        startInfo.ArgumentList.Add("--launcher");
+        startInfo.ArgumentList.Add(launcher);
+        startInfo.ArgumentList.Add("--manifest");
+        startInfo.ArgumentList.Add(manifest);
+
+        LoggerHelper.Info(
+            $"准备启动便携包更新器：文件={detachedUpdaterPath}，源目录={source}，目标目录={target}，启动器={launcher}");
+        var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("无法启动便携包更新器。");
+        LoggerHelper.Info($"便携包更新器已启动：进程ID={process.Id}");
+        await Task.Delay(750).ConfigureAwait(false);
+        DispatcherHelper.PostOnMainThread(() => Instances.RootView.BeforeClosed(true, true));
+        Instances.ShutdownApplication();
+    }
+
     [Obsolete("旧的外部更新器链路，已废弃；新的本地二合一更新不应再调用此方法。")]
     async private static Task ApplySecureUpdate(string source, string target, string oldName = "", string newName = "")
     {
@@ -2227,7 +2366,7 @@ public static class VersionChecker
     private static int GetAssetPriority(string fileName, string targetOS, string targetFamily, string targetArch)
     {
         if (string.IsNullOrEmpty(fileName)) return 0;
-        fileName = fileName.ToLower();
+        fileName = fileName.ToLowerInvariant();
 
         // 系统别名映射（保留原有定义）
         var osAliases = new Dictionary<string, List<string>>
@@ -2296,8 +2435,8 @@ public static class VersionChecker
             }
         }
 
-        // 文件名包含 "MFA" 时，额外加最高档分数（100）
-        if (fileName.Contains("MFA"))
+        // MFA 自身发布包在相同平台候选中优先。
+        if (fileName.Contains("mfa", StringComparison.Ordinal))
         {
             basePriority += 100;
         }
@@ -2352,27 +2491,37 @@ public static class VersionChecker
 
                 if (releaseData["assets"] is JArray { Count: > 0 } assets)
                 {
-                    var orderedAssets = assets
-                        .Select(asset => new
-                        {
-                            Url = asset["browser_download_url"]?.ToString(),
-                            Name = asset["name"]?.ToString().ToLower(),
-                            Sha256 = ExtractSha256FromDigest(asset["digest"]?.ToString())
-                        })
-                        // 使用新的优先级计算方法（传入系统家族）
-                        .OrderByDescending(a => GetAssetPriority(a.Name, osPlatform, osFamily, cpuArch))
+                    var releaseAssets = assets
+                        .Select(asset => new GitHubReleaseAsset(
+                            asset["name"]?.ToString() ?? string.Empty,
+                            asset["browser_download_url"]?.ToString() ?? string.Empty,
+                            ExtractSha256FromDigest(asset["digest"]?.ToString())))
                         .ToList();
+                    var runtimeAvailable = File.Exists(Path.Combine(
+                        AppContext.BaseDirectory,
+                        "runtime",
+                        "python",
+                        OperatingSystem.IsWindows() ? "python.exe" : "python"));
+                    var bestAsset = SelectGitHubReleaseAsset(
+                        releaseAssets,
+                        osPlatform,
+                        osFamily,
+                        cpuArch,
+                        runtimeAvailable);
+                    downloadUrl = bestAsset.Url;
+                    sha256 = bestAsset.Sha256;
+                    LoggerHelper.Info(
+                        $"已选择 GitHub 更新归档：名称={bestAsset.Name}，runtimeAvailable={runtimeAvailable}");
 
-                    // 输出调试日志（查看每个资产的优先级）
-                    foreach (var asset in orderedAssets)
+                    if (string.IsNullOrWhiteSpace(sha256))
                     {
-                        int priority = GetAssetPriority(asset.Name, osPlatform, osFamily, cpuArch);
-                        LoggerHelper.Info($"候选资产优先级：名称={asset.Name}，优先级={priority}");
+                        var sidecar = releaseAssets.FirstOrDefault(asset =>
+                            asset.Name.Equals(bestAsset.Name + ".sha256", StringComparison.OrdinalIgnoreCase));
+                        if (sidecar is not null && !string.IsNullOrWhiteSpace(sidecar.Url))
+                        {
+                            sha256 = await DownloadSha256SidecarAsync(httpClient, sidecar.Url).ConfigureAwait(false);
+                        }
                     }
-
-                    var bestAsset = orderedAssets.FirstOrDefault(a => a.Url != null);
-                    downloadUrl = bestAsset?.Url ?? string.Empty;
-                    sha256 = bestAsset?.Sha256 ?? string.Empty;
                 }
             }
             else
@@ -2387,6 +2536,15 @@ public static class VersionChecker
             throw;
         }
         return (downloadUrl, sha256);
+    }
+
+    private static async Task<string> DownloadSha256SidecarAsync(HttpClient httpClient, string url)
+    {
+        var content = await httpClient.GetStringAsync(url).ConfigureAwait(false);
+        var match = Regex.Match(content, @"\b[0-9a-fA-F]{64}\b");
+        if (!match.Success)
+            throw new InvalidDataException("GitHub Release 的 SHA256 校验文件格式无效。");
+        return match.Value.ToLowerInvariant();
     }
 
 
@@ -2643,48 +2801,92 @@ public static class VersionChecker
         TextBlock? downloadSizeTextBlock = null,
         TextBlock? downloadSpeedTextBlock = null)
     {
+        using var httpClient = CreateHttpClientWithProxy();
+        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("request");
+        httpClient.DefaultRequestHeaders.Accept.Clear();
+        httpClient.DefaultRequestHeaders.Accept.ParseAdd("*/*");
+        return await DownloadFileWithClientAsync(
+            httpClient,
+            url,
+            filePath,
+            progressBar,
+            downloadSizeTextBlock,
+            downloadSpeedTextBlock).ConfigureAwait(false);
+    }
+
+    internal static async Task<(bool, string)> DownloadFileWithClientAsync(
+        HttpClient httpClient,
+        string url,
+        string filePath,
+        ProgressBar? progressBar = null,
+        TextBlock? downloadSizeTextBlock = null,
+        TextBlock? downloadSpeedTextBlock = null)
+    {
         var targetFilePath = filePath;
+        var partialFilePath = filePath + ".part";
         try
         {
-            using var httpClient = CreateHttpClientWithProxy();
-            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("request");
-            httpClient.DefaultRequestHeaders.Accept.Clear();
-            httpClient.DefaultRequestHeaders.Accept.ParseAdd("*/*");
+            if (File.Exists(targetFilePath))
+                return (true, targetFilePath);
 
-            using var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Get, url), HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
+            Directory.CreateDirectory(Path.GetDirectoryName(partialFilePath)!);
+            var existingLength = File.Exists(partialFilePath)
+                ? new FileInfo(partialFilePath).Length
+                : 0;
 
-            if (response.Content.Headers.ContentDisposition != null)
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (existingLength > 0)
+                request.Headers.Range = new RangeHeaderValue(existingLength, null);
+            using var response = await httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+
+            if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
             {
-                var suggestedFileName = ParseFileNameFromContentDisposition(
-                    response.Content.Headers.ContentDisposition.ToString());
-                if (!string.IsNullOrEmpty(suggestedFileName))
+                var remoteLength = response.Content.Headers.ContentRange?.Length;
+                if (remoteLength.HasValue && remoteLength.Value == existingLength)
                 {
-                    string dir = Path.GetDirectoryName(filePath)!;
-                    string newFileName = Path.GetFileNameWithoutExtension(filePath) + Path.GetExtension(suggestedFileName);
-                    targetFilePath = Path.Combine(dir, newFileName);
+                    File.Move(partialFilePath, targetFilePath, true);
+                    return (true, targetFilePath);
                 }
+                File.Delete(partialFilePath);
+                LoggerHelper.Warning(
+                    $"服务器拒绝续传且本地长度不匹配，将在下一次重试重新下载：本地={existingLength}，远端={remoteLength}");
+                return (false, targetFilePath);
             }
 
+            response.EnsureSuccessStatusCode();
+            var append = existingLength > 0 && response.StatusCode == HttpStatusCode.PartialContent;
+            if (!append && existingLength > 0)
+            {
+                LoggerHelper.Info("下载服务器未返回 206，已安全丢弃旧分片并重新下载。");
+                existingLength = 0;
+            }
             var startTime = DateTime.Now;
-            long totalBytesRead = 0;
+            long totalBytesRead = existingLength;
             long bytesPerSecond = 0;
-            long? totalBytes = response.Content.Headers.ContentLength;
+            long? totalBytes = response.Content.Headers.ContentRange?.Length;
+            if (!totalBytes.HasValue && response.Content.Headers.ContentLength.HasValue)
+                totalBytes = existingLength + response.Content.Headers.ContentLength.Value;
 
-            await using var contentStream = await response.Content.ReadAsStreamAsync();
-            await using var fileStream = new FileStream(targetFilePath, FileMode.Create, FileAccess.Write);
+            await using var contentStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            await using var fileStream = new FileStream(
+                partialFilePath,
+                append ? FileMode.Append : FileMode.Create,
+                FileAccess.Write,
+                FileShare.Read);
 
-            var buffer = new byte[8192];
+            var buffer = new byte[64 * 1024];
             var stopwatch = Stopwatch.StartNew();
             var lastSpeedUpdateTime = startTime;
-            long lastTotalBytesRead = 0;
+            long lastTotalBytesRead = totalBytesRead;
 
             while (true)
             {
-                var bytesRead = await contentStream.ReadAsync(buffer);
+                var bytesRead = await contentStream.ReadAsync(buffer).ConfigureAwait(false);
                 if (bytesRead == 0) break;
 
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead)).ConfigureAwait(false);
 
                 totalBytesRead += bytesRead;
                 var currentTime = DateTime.Now;
@@ -2725,6 +2927,17 @@ public static class VersionChecker
                 }
             }
 
+            await fileStream.FlushAsync().ConfigureAwait(false);
+            if (totalBytes.HasValue && totalBytesRead != totalBytes.Value)
+            {
+                LoggerHelper.Warning(
+                    $"下载长度不完整，保留分片等待续传：已下载={totalBytesRead}，期望={totalBytes.Value}");
+                return (false, targetFilePath);
+            }
+
+            await fileStream.DisposeAsync().ConfigureAwait(false);
+            File.Move(partialFilePath, targetFilePath, true);
+
             SetProgress(progressBar, 100);
             SetDownloadInfo(downloadSizeTextBlock, downloadSpeedTextBlock, totalBytesRead, totalBytes ?? totalBytesRead, bytesPerSecond);
             DispatcherHelper.PostOnMainThread(() =>
@@ -2739,12 +2952,12 @@ public static class VersionChecker
         }
         catch (HttpRequestException httpEx)
         {
-            LoggerHelper.Error($"HTTP 请求失败：原因={httpEx.Message}", httpEx);
+            LoggerHelper.Error($"HTTP 请求失败，已保留续传分片：原因={httpEx.Message}", httpEx);
             return (false, targetFilePath);
         }
         catch (IOException ioEx)
         {
-            LoggerHelper.Error($"文件操作失败：原因={ioEx.Message}", ioEx);
+            LoggerHelper.Error($"文件操作失败，已保留续传分片：原因={ioEx.Message}", ioEx);
             return (false, targetFilePath);
         }
         catch (Exception ex)
@@ -2754,7 +2967,7 @@ public static class VersionChecker
         }
     }
 
-    async private static Task<bool> VerifyFileSha256Async(string filePath, string expectedSha256)
+    internal static async Task<bool> VerifyFileSha256Async(string filePath, string expectedSha256)
     {
         if (string.IsNullOrEmpty(expectedSha256) || !File.Exists(filePath))
             return false;

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Text;
@@ -8,11 +9,12 @@ public class Program
 {
     private const int InitDelay = 2500;
     static StringBuilder LogBuilder = new();
+    private static string? LogDirectoryOverride;
     static void SaveLog()
     {
         try
         {
-            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            var logDir = LogDirectoryOverride ?? Path.Combine(AppContext.BaseDirectory, "logs");
             // 检查目录是否可写
             if (!Directory.Exists(logDir))
             {
@@ -58,6 +60,12 @@ public class Program
                 return;
             }
 
+            if (args[0].Equals("--apply-package", StringComparison.OrdinalIgnoreCase))
+            {
+                HandlePortablePackageUpdate(args);
+                return;
+            }
+
             ValidateArguments(args);
             int mainProcessId = ParseMainProcessId(args);
             WaitForMainProcessExit(mainProcessId);
@@ -66,12 +74,146 @@ public class Program
         catch (Exception ex)
         {
             Log($"更新过程发生错误: {ex.Message}");
+            Environment.ExitCode = 1;
             SaveLog();
         }
         finally
         {
             SaveLog();
         }
+    }
+
+    private static void HandlePortablePackageUpdate(string[] args)
+    {
+        var options = ParsePortablePackageArguments(args);
+        var source = Path.GetFullPath(options["--apply-package"]);
+        var target = Path.GetFullPath(options["--target"]);
+        var launcher = options["--launcher"];
+        var manifestName = options["--manifest"];
+        if (!int.TryParse(options["--parent-pid"], out var parentPid) || parentPid <= 0)
+            throw new ArgumentException("--parent-pid 必须是有效的进程 ID。");
+        if (!Directory.Exists(source))
+            throw new DirectoryNotFoundException($"更新包目录不存在: {source}");
+        if (string.Equals(source.TrimEnd('\\', '/'), target.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("更新包目录不能与安装目录相同。");
+
+        var manifestSource = Path.Combine(source, manifestName);
+        var launcherSource = Path.Combine(source, launcher);
+        if (!File.Exists(manifestSource))
+            throw new FileNotFoundException("更新包缺少版本清单，已拒绝应用。", manifestSource);
+        if (!File.Exists(launcherSource) && !File.Exists(Path.Combine(target, launcher)))
+            throw new FileNotFoundException("更新包缺少启动器，已拒绝应用。", launcherSource);
+
+        LogDirectoryOverride = Path.Combine(target, "logs");
+        Log($"便携包源目录: {source}");
+        Log($"便携包目标目录: {target}");
+        WaitForMainProcessExitStrict(parentPid, TimeSpan.FromSeconds(60));
+
+        Directory.CreateDirectory(target);
+        CopyPortablePackageContents(source, target, manifestName);
+        HandleFileTransfer(manifestSource, Path.Combine(target, manifestName));
+        Log($"版本清单已最后写入: {manifestName}");
+
+        var launcherPath = Path.Combine(target, launcher);
+        StartPortableLauncher(launcherPath, target);
+        HandleDeleteDirectoryTransfer(source);
+    }
+
+    private static Dictionary<string, string> ParsePortablePackageArguments(string[] args)
+    {
+        if (args.Length < 10 || args.Length % 2 != 0)
+            throw new ArgumentException("便携包更新参数不完整。");
+        var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < args.Length; index += 2)
+        {
+            var key = args[index];
+            if (!key.StartsWith("--", StringComparison.Ordinal))
+                throw new ArgumentException($"无效的更新参数: {key}");
+            options[key] = args[index + 1];
+        }
+        foreach (var required in new[] { "--apply-package", "--target", "--parent-pid", "--launcher", "--manifest" })
+        {
+            if (!options.TryGetValue(required, out var value) || string.IsNullOrWhiteSpace(value))
+                throw new ArgumentException($"缺少更新参数: {required}");
+        }
+        return options;
+    }
+
+    private static void WaitForMainProcessExitStrict(int processId, TimeSpan timeout)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            Log($"等待 MFA 正常退出 (PID: {processId})");
+            if (!process.WaitForExit((int)timeout.TotalMilliseconds))
+                throw new TimeoutException($"MFA 未在 {timeout.TotalSeconds:0} 秒内退出，已取消更新且不会强制结束进程。");
+        }
+        catch (ArgumentException)
+        {
+            Log("MFA 已退出，开始应用更新。");
+        }
+    }
+
+    private static readonly HashSet<string> PreservedTopLevelDirectories = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "config",
+        "profiles",
+        "debug",
+        "logs",
+        "screencap",
+        ".maabangdream-backup",
+    };
+
+    private static void CopyPortablePackageContents(string source, string target, string manifestName)
+    {
+        foreach (var sourceFile in Directory.GetFiles(source, "*", SearchOption.TopDirectoryOnly))
+        {
+            if (Path.GetFileName(sourceFile).Equals(manifestName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            HandleFileTransfer(sourceFile, Path.Combine(target, Path.GetFileName(sourceFile)));
+        }
+
+        foreach (var sourceDirectory in Directory.GetDirectories(source, "*", SearchOption.TopDirectoryOnly))
+        {
+            var directoryName = Path.GetFileName(sourceDirectory);
+            if (PreservedTopLevelDirectories.Contains(directoryName))
+            {
+                Log($"保留用户目录，跳过更新包中的同名目录: {directoryName}");
+                continue;
+            }
+            if (directoryName.Equals("runtime", StringComparison.OrdinalIgnoreCase)
+                && File.Exists(Path.Combine(target, "runtime", "python", "python.exe")))
+            {
+                Log("检测到现有 Python runtime，跳过更新包中的 runtime 目录。");
+                continue;
+            }
+            CopyPortableDirectory(sourceDirectory, Path.Combine(target, directoryName));
+        }
+    }
+
+    private static void CopyPortableDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var sourceFile in Directory.GetFiles(source, "*", SearchOption.TopDirectoryOnly))
+            HandleFileTransfer(sourceFile, Path.Combine(target, Path.GetFileName(sourceFile)));
+        foreach (var sourceDirectory in Directory.GetDirectories(source, "*", SearchOption.TopDirectoryOnly))
+            CopyPortableDirectory(sourceDirectory, Path.Combine(target, Path.GetFileName(sourceDirectory)));
+    }
+
+    private static void StartPortableLauncher(string launcherPath, string workingDirectory)
+    {
+        if (!File.Exists(launcherPath))
+            throw new FileNotFoundException("更新后的启动器不存在。", launcherPath);
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = launcherPath,
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
+            CreateNoWindow = !RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
+        };
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("更新完成，但启动器启动失败。");
+        Log($"更新后的启动器已启动 [PID: {process.Id}]");
     }
 
 
