@@ -11,7 +11,6 @@ using MFAAvalonia.Helper.Converters;
 using MFAAvalonia.Helper.ValueType;
 using MFAAvalonia.ViewModels.Other;
 using MFAAvalonia.ViewModels.Windows;
-using MFAAvalonia.Views.Windows;
 using System;
 using System.Collections.ObjectModel;
 using System.Threading;
@@ -50,6 +49,10 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
     private void OnConfigurationSwitched(string _)
     {
         RefreshDebugActionsVisibility();
+        DownloadSourceIndex = VersionChecker.NormalizeResourceDownloadSourceIndex(
+            ConfigurationManager.Current.GetValue(ConfigurationKeys.DownloadSourceIndex, 0),
+            MaaProcessor.Interface?.RID);
+        OnPropertyChanged(nameof(DownloadSourceList));
     }
 
     public void RefreshDebugActionsVisibility()
@@ -188,20 +191,38 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
         ShowResourceVersion = !string.IsNullOrWhiteSpace(value);
     }
 
-    public ObservableCollection<LocalizationViewModel> DownloadSourceList =>
-    [
-        new()
+    public ObservableCollection<LocalizationViewModel> DownloadSourceList
+    {
+        get
         {
-            Name = "GitHub"
-        },
-        new(LangKeys.MirrorChyan),
-    ];
+            var sources = new ObservableCollection<LocalizationViewModel>
+            {
+                new() { Name = "GitHub" }
+            };
+            if (VersionChecker.SupportsMirrorResourceSource(MaaProcessor.Interface?.RID))
+            {
+                sources.Add(new LocalizationViewModel(LangKeys.MirrorChyan));
+            }
+            return sources;
+        }
+    }
 
-    [ObservableProperty] private int _downloadSourceIndex = ConfigurationManager.Current.GetValue(ConfigurationKeys.DownloadSourceIndex, 1);
+    [ObservableProperty] private int _downloadSourceIndex =
+        VersionChecker.NormalizeResourceDownloadSourceIndex(
+            ConfigurationManager.Current.GetValue(ConfigurationKeys.DownloadSourceIndex, 0),
+            MaaProcessor.Interface?.RID);
 
     partial void OnDownloadSourceIndexChanged(int value)
     {
-        ConfigurationManager.Current.SetValue(ConfigurationKeys.DownloadSourceIndex, value);
+        var normalized = VersionChecker.NormalizeResourceDownloadSourceIndex(
+            value,
+            MaaProcessor.Interface?.RID);
+        if (normalized != value)
+        {
+            DownloadSourceIndex = normalized;
+            return;
+        }
+        ConfigurationManager.Current.SetValue(ConfigurationKeys.DownloadSourceIndex, normalized);
     }
 
     public ObservableCollection<LocalizationViewModel> UIUpdateChannelList =>
@@ -280,10 +301,10 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
     partial void OnProxyTypeChanged(UpdateProxyType value) => HandlePropertyChanged(ConfigurationKeys.ProxyType, value.ToString());
 
     [RelayCommand]
-    private void UpdateResource() => _ = ApplyGitHubUpdateAsync(force: false);
+    private void UpdateResource() => VersionChecker.UpdateResourceAsync();
 
     [RelayCommand]
-    private void RedownloadResource() => _ = ApplyGitHubUpdateAsync(force: true);
+    private void RedownloadResource() => VersionChecker.UpdateResourceAsync("v0.0.0");
 
     [RelayCommand]
     private async Task UpdateResourceFromLocalPackage()
@@ -315,7 +336,7 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void CheckResourceUpdate() => _ = CheckGitHubUpdateAsync();
+    private void CheckResourceUpdate() => VersionChecker.CheckResourceVersionAsync();
 
     [RelayCommand]
     private void UpdateMFA()
@@ -341,240 +362,4 @@ public partial class VersionUpdateSettingsUserControlModel : ViewModelBase
         VersionChecker.CheckCDKAsync();
     }
 
-    // ---- GitHub Releases 增量自更新（MaaBanGDream 便携包） ----
-
-    [ObservableProperty] private string _gitHubUpdateStatus = "尚未检查更新";
-
-    [ObservableProperty] private bool _hasGitHubUpdate;
-
-    [ObservableProperty] private bool _isGitHubUpdating;
-
-    [ObservableProperty] private bool _isApplyingGitHubUpdate;
-
-    private GitHubReleaseUpdater? _gitHubUpdater;
-
-    private GitHubReleaseUpdater.LatestRelease? _gitHubLatest;
-
-    /// <summary>
-    /// 启动时后台静默检查一次；结果只显示在设置页，不打断用户。
-    /// 开启“自动更新资源”且应用空闲时，检查到新版本就自动整包更新。
-    /// </summary>
-    public void StartGitHubUpdateCheck()
-    {
-        if (!EnableCheckVersion && !EnableAutoUpdateResource)
-        {
-            return;
-        }
-        _ = StartupGitHubCheckAsync();
-    }
-
-    [RelayCommand]
-    private async Task CheckGitHubUpdate()
-    {
-        IsGitHubUpdating = true;
-        try
-        {
-            await CheckGitHubUpdateAsync();
-        }
-        finally
-        {
-            IsGitHubUpdating = false;
-        }
-    }
-
-    private async Task CheckGitHubUpdateAsync()
-    {
-        var updater = GetUpdater();
-        if (updater is null)
-        {
-            GitHubUpdateStatus = "无法确定安装目录，无法检查更新。";
-            return;
-        }
-
-        try
-        {
-            var latest = await updater.CheckLatestAsync(CancellationToken.None);
-            if (latest is null)
-            {
-                GitHubUpdateStatus = "无法连接 GitHub，请稍后再试。";
-                return;
-            }
-
-            _gitHubLatest = latest;
-            ResourceVersion = updater.LocalVersion ?? string.Empty;
-            HasGitHubUpdate = GitHubReleaseUpdater.IsNewer(
-                latest.Version,
-                updater.LocalVersion);
-            if (HasGitHubUpdate)
-            {
-                // 标题栏显示“发现新版本”按钮，点击即走整包更新流程。
-                Instances.RootViewModel.WindowUpdateInfo =
-                    $"发现新版本 v{latest.Version}，点击更新";
-                Instances.RootViewModel.TempResourceUpdateAction =
-                    () => _ = ApplyGitHubUpdateAsync(force: false);
-            }
-            else
-            {
-                Instances.RootViewModel.WindowUpdateInfo = string.Empty;
-                Instances.RootViewModel.TempResourceUpdateAction = null;
-            }
-            GitHubUpdateStatus = HasGitHubUpdate
-                ? $"发现新版本 v{latest.Version}（当前 {updater.LocalVersion}）"
-                : $"已是最新版本 v{latest.Version}";
-        }
-        catch (Exception ex)
-        {
-            LoggerHelper.Error($"GitHub 更新检查失败：{ex.Message}", ex);
-            GitHubUpdateStatus = "更新检查失败，请查看日志。";
-        }
-    }
-
-    [RelayCommand]
-    private Task ApplyGitHubUpdate() => ApplyGitHubUpdateAsync(force: false);
-
-    private async Task StartupGitHubCheckAsync()
-    {
-        await CheckGitHubUpdateAsync();
-        await CheckGitHubAnnouncementAsync();
-        if (!EnableAutoUpdateResource || !HasGitHubUpdate)
-        {
-            return;
-        }
-        // 自动应用只在空闲时进行，避免打断正在运行的任务；繁忙时下次
-        // 启动再检查。
-        if (Instances.RootViewModel?.Idle != true)
-        {
-            GitHubUpdateStatus = "发现新版本，但当前正在执行任务，已推迟自动更新。";
-            return;
-        }
-        await ApplyGitHubUpdateAsync(force: false);
-    }
-
-    /// <summary>
-    /// 主页更新公告：读取最新 Release 的简介 Markdown，每个新 tag 只弹一次。
-    /// </summary>
-    private async Task CheckGitHubAnnouncementAsync()
-    {
-        try
-        {
-            var updater = GetUpdater();
-            if (updater is null)
-            {
-                return;
-            }
-            var announcement = await updater.FetchLatestAnnouncementAsync(
-                CancellationToken.None);
-            if (announcement is null || string.IsNullOrWhiteSpace(announcement.Body))
-            {
-                return;
-            }
-            var lastTag = ConfigurationManager.Current.GetValue(
-                ConfigurationKeys.GitHubAnnouncementLastTag,
-                string.Empty) ?? string.Empty;
-            if (string.Equals(lastTag, announcement.Tag, StringComparison.Ordinal))
-            {
-                return;
-            }
-            ConfigurationManager.Current.SetValue(
-                ConfigurationKeys.GitHubAnnouncementLastTag,
-                announcement.Tag);
-            DispatcherHelper.RunOnMainThread(() =>
-            {
-                var viewModel = new ChangelogViewModel
-                {
-                    Type = AnnouncementType.Release,
-                    AnnouncementInfo = announcement.Body,
-                };
-                new ChangelogView { DataContext = viewModel }.Show();
-            });
-        }
-        catch (Exception ex)
-        {
-            LoggerHelper.Error($"获取 GitHub 更新公告失败：{ex.Message}", ex);
-        }
-    }
-
-    private async Task ApplyGitHubUpdateAsync(bool force)
-    {
-        var updater = GetUpdater();
-        if (updater is null)
-        {
-            GitHubUpdateStatus = "无法确定安装目录，无法更新。";
-            return;
-        }
-        if (!force && (_gitHubLatest is null || !HasGitHubUpdate))
-        {
-            GitHubUpdateStatus = "当前没有可用的新版本。";
-            return;
-        }
-
-        IsApplyingGitHubUpdate = true;
-        try
-        {
-            var latest = _gitHubLatest;
-            if (latest is null || force)
-            {
-                latest = await updater.CheckLatestAsync(CancellationToken.None);
-                if (latest is null)
-                {
-                    GitHubUpdateStatus = "无法连接 GitHub，请稍后再试。";
-                    return;
-                }
-                _gitHubLatest = latest;
-                HasGitHubUpdate = GitHubReleaseUpdater.IsNewer(
-                    latest.Version,
-                    updater.LocalVersion);
-            }
-
-            var progress = new Progress<string>(
-                text => DispatcherHelper.RunOnMainThread(() => GitHubUpdateStatus = text));
-            var zipPath = await updater.DownloadAsync(
-                latest,
-                progress,
-                CancellationToken.None);
-            updater.ScheduleRestart(zipPath);
-            if (Instances.RootViewModel?.Idle == true)
-            {
-                ToastHelper.Info("更新完成", "程序将自动重启以应用更新。");
-                DispatcherHelper.RunOnMainThread(
-                    () => Environment.Exit(0));
-            }
-            else
-            {
-                // 下载期间用户可能已开始任务：不强制退出，重启辅助脚本会
-                // 在应用正常退出后完成覆盖解压并重启。
-                GitHubUpdateStatus =
-                    "更新包已下载完成；将在程序退出后自动应用并重启。";
-                ToastHelper.Info(
-                    "更新包已就绪",
-                    "为避免打断正在执行的任务，将在程序退出后自动应用更新。");
-            }
-        }
-        catch (Exception ex)
-        {
-            LoggerHelper.Error($"GitHub 更新应用失败：{ex.Message}", ex);
-            GitHubUpdateStatus = $"更新失败：{ex.Message}";
-        }
-        finally
-        {
-            IsApplyingGitHubUpdate = false;
-        }
-    }
-
-    private GitHubReleaseUpdater? GetUpdater()
-    {
-        if (_gitHubUpdater is not null)
-        {
-            return _gitHubUpdater;
-        }
-
-        var baseDirectory = AppContext.BaseDirectory;
-        if (string.IsNullOrWhiteSpace(baseDirectory))
-        {
-            return null;
-        }
-
-        _gitHubUpdater = new GitHubReleaseUpdater(baseDirectory);
-        return _gitHubUpdater;
-    }
 }
