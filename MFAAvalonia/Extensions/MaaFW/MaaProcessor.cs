@@ -52,6 +52,7 @@ public class MaaProcessor
     private Thread? _commandThread;
     public static string Resource => AppPaths.ResourceDirectory;
     public static string ResourceBase => Path.Combine(Resource, "base");
+    private static long _interfaceMetadataGeneration;
     public static ObservableCollection<MaaProcessor> Processors { get; } = new();
     public static MaaToolkit Toolkit { get; } = new(true);
     public static MaaGlobal Global { get; } = new();
@@ -525,6 +526,7 @@ public class MaaProcessor
             // 释放旧 Preset 的事件订阅，防止 LanguageChanged 泄漏
             field?.Preset?.ForEach(p => p.Dispose());
             field = value;
+            var metadataGeneration = Interlocked.Increment(ref _interfaceMetadataGeneration);
 
             foreach (var customResource in value?.Resource ?? Enumerable.Empty<MaaInterface.MaaInterfaceResource>())
             {
@@ -579,63 +581,70 @@ public class MaaProcessor
                 }
 
                 // 异步加载 Contact 和 Description 内容
-                _ = LoadContactAndDescriptionAsync(value);
+                _ = LoadContactAndDescriptionAsync(value, metadataGeneration);
             }
 
         }
     }
 
     /// <summary>
-    /// 异步加载 Contact 和 Description 内容
+    /// 重新加载当前 Interface 的 About 元数据。SettingsViewModel 晚创建时由其构造函数调用。
     /// </summary>
-    async private static Task LoadContactAndDescriptionAsync(MaaInterface maaInterface)
+    public static Task RefreshSettingsMetadataAsync(SettingsViewModel? settingsViewModel = null)
     {
-        var projectDir = AppPaths.DataRoot;
+        var maaInterface = Interface;
+        if (maaInterface is null)
+            return Task.CompletedTask;
 
-        if (!Instances.IsResolved<SettingsViewModel>())
-        {
-            return;
-        }
+        return LoadContactAndDescriptionAsync(maaInterface, Volatile.Read(ref _interfaceMetadataGeneration), settingsViewModel);
+    }
 
-        var settingsViewModel = Instances.SettingsViewModel;
+    /// <summary>
+    /// 解析资源说明、联系方式和许可证内容。该方法不触碰 UI，供延迟创建的设置页复用。
+    /// </summary>
+    internal static async Task<(string description, string contact, string license)> ResolveSettingsMetadataContentAsync(
+        MaaInterface maaInterface,
+        string projectDir)
+    {
+        var descriptionTask = maaInterface.Description.ResolveContentAsync(projectDir);
+        var contactTask = maaInterface.Contact.ResolveContentAsync(projectDir);
+        var licenseTask = maaInterface.License.ResolveContentAsync(projectDir);
+        await Task.WhenAll(descriptionTask, contactTask, licenseTask).ConfigureAwait(false);
+        return (await descriptionTask.ConfigureAwait(false), await contactTask.ConfigureAwait(false), await licenseTask.ConfigureAwait(false));
+    }
 
-        // 加载 Description
-        if (!string.IsNullOrWhiteSpace(maaInterface.Description))
+    /// <summary>
+    /// 只允许当前 Interface 的解析结果写入设置页，避免旧异步请求覆盖新资源内容。
+    /// </summary>
+    private static async Task LoadContactAndDescriptionAsync(
+        MaaInterface maaInterface,
+        long metadataGeneration,
+        SettingsViewModel? expectedSettingsViewModel = null)
+    {
+        try
         {
-            var description = await maaInterface.Description.ResolveContentAsync(projectDir);
-            settingsViewModel.ResourceDescription = description;
-            settingsViewModel.HasResourceDescription = !string.IsNullOrWhiteSpace(description);
-        }
-        else
-        {
-            settingsViewModel.ResourceDescription = string.Empty;
-            settingsViewModel.HasResourceDescription = false;
-        }
+            var content = await ResolveSettingsMetadataContentAsync(maaInterface, AppPaths.DataRoot).ConfigureAwait(false);
+            if (!ReferenceEquals(Interface, maaInterface)
+                || Volatile.Read(ref _interfaceMetadataGeneration) != metadataGeneration)
+                return;
 
-        // 加载 Contact
-        if (!string.IsNullOrWhiteSpace(maaInterface.Contact))
-        {
-            var contact = await maaInterface.Contact.ResolveContentAsync(projectDir);
-            settingsViewModel.ResourceContact = contact;
-            settingsViewModel.HasResourceContact = !string.IsNullOrWhiteSpace(contact);
-        }
-        else
-        {
-            settingsViewModel.ResourceContact = string.Empty;
-            settingsViewModel.HasResourceContact = false;
-        }
+            DispatcherHelper.PostOnMainThread(() =>
+            {
+                if (!ReferenceEquals(Interface, maaInterface)
+                    || Volatile.Read(ref _interfaceMetadataGeneration) != metadataGeneration)
+                    return;
 
-        // 加载 License
-        if (!string.IsNullOrWhiteSpace(maaInterface.License))
-        {
-            var license = await maaInterface.License.ResolveContentAsync(projectDir);
-            settingsViewModel.ResourceLicense = license;
-            settingsViewModel.HasResourceLicense = !string.IsNullOrWhiteSpace(license);
+                var settingsViewModel = expectedSettingsViewModel
+                    ?? (Instances.IsResolved<SettingsViewModel>() ? Instances.SettingsViewModel : null);
+                settingsViewModel?.ApplyResolvedInterfaceContent(
+                    content.description,
+                    content.contact,
+                    content.license);
+            });
         }
-        else
+        catch (Exception ex)
         {
-            settingsViewModel.ResourceLicense = string.Empty;
-            settingsViewModel.HasResourceLicense = false;
+            LoggerHelper.Warning($"加载资源 About 元数据失败：原因={ex.Message}");
         }
     }
 

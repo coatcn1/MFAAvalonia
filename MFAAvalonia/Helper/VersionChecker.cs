@@ -54,6 +54,7 @@ public static class VersionChecker
     private const string ResourceUpdateKeepArtifactsEnv = "MFA_DEBUG_UPDATE_RESOURCE_KEEP";
 
     public sealed record GitHubReleaseAsset(string Name, string Url, string Sha256);
+    public sealed record ResourceReleaseNotes(string Version, string Content, bool FromCache);
 
     public static bool SupportsMirrorResourceSource(string? resourceId) =>
         !string.IsNullOrWhiteSpace(resourceId);
@@ -419,7 +420,6 @@ public static class VersionChecker
             }
             else
             {
-                DispatcherHelper.RunOnMainThread(ChangelogViewModel.CheckChangelog);
                 ToastHelper.Info(LangKeys.ResourcesAreLatestVersion.ToLocalization());
             }
             Instances.RootViewModel.SetUpdating(false);
@@ -570,6 +570,7 @@ public static class VersionChecker
             strings = GetRepoFromUrl(url);
         }
         string latestVersion = string.Empty;
+        string releaseTag = string.Empty;
         string downloadUrl = string.Empty;
         string sha256 = string.Empty;
         var isFull = true;
@@ -596,6 +597,7 @@ public static class VersionChecker
                     var result = await GetLatestVersionAndDownloadUrlFromGithubAsync(strings[0], strings[1], false, "", localVersion).ConfigureAwait(false);
                     downloadUrl = result.url;
                     latestVersion = result.latestVersion;
+                    releaseTag = result.latestVersion;
                     sha256 = result.sha256;
                 }
                 else
@@ -840,6 +842,10 @@ public static class VersionChecker
             action?.Invoke();
             return;
         }
+
+        if (isGithub && !isLocalPackage && IsNewVersionAvailable(releaseTag, localVersion))
+            await PrepareResourceChangelogAfterValidatedUpdateAsync(
+                strings[0], strings[1], releaseTag, containsCoreApplicationFiles);
 
         if (containsCoreApplicationFiles)
         {
@@ -2142,11 +2148,14 @@ public static class VersionChecker
         string repo = "MFAAvalonia",
         bool onlyCheck = false,
         string targetVersion = "",
-        string currentVersion = "v0.0.0")
+        string currentVersion = "v0.0.0",
+        HttpClient? httpClient = null,
+        VersionType? versionTypeOverride = null,
+        HttpClient? webFallbackHttpClient = null)
     {
-        var versionType = repo.Equals("MFAAvalonia", StringComparison.OrdinalIgnoreCase)
+        var versionType = versionTypeOverride ?? (repo.Equals("MFAAvalonia", StringComparison.OrdinalIgnoreCase)
             ? Instances.VersionUpdateSettingsUserControlModel.UIUpdateChannelIndex.ToVersionType()
-            : Instances.VersionUpdateSettingsUserControlModel.ResourceUpdateChannelIndex.ToVersionType();
+            : Instances.VersionUpdateSettingsUserControlModel.ResourceUpdateChannelIndex.ToVersionType());
         string url = string.Empty;
         string latestVersion = string.Empty;
         string sha256 = string.Empty;
@@ -2156,17 +2165,14 @@ public static class VersionChecker
         var releaseUrl = $"https://api.github.com/repos/{owner}/{repo}/releases";
         int page = 1;
         const int perPage = 30;
-        using var httpClient = CreateHttpClientWithProxy();
-
-        if (!string.IsNullOrWhiteSpace(Instances.VersionUpdateSettingsUserControlModel.GitHubToken))
-        {
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
-                "Bearer",
-                Instances.VersionUpdateSettingsUserControlModel.GitHubToken);
-        }
-
-        httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("request");
-        httpClient.DefaultRequestHeaders.Accept.TryParseAdd("application/json");
+        var ownsHttpClient = httpClient == null;
+        httpClient ??= CreateHttpClientWithProxy();
+        using var ownedHttpClient = ownsHttpClient ? httpClient : null;
+        ConfigureGitHubApiClient(httpClient, "request", ownsHttpClient);
+        var ownsWebFallbackHttpClient = webFallbackHttpClient == null;
+        webFallbackHttpClient ??= CreateHttpClientWithProxy();
+        using var ownedWebFallbackHttpClient = ownsWebFallbackHttpClient ? webFallbackHttpClient : null;
+        ConfigureGitHubWebClient(webFallbackHttpClient);
 
         // 用于存储找到的最佳版本
         JToken? bestRelease = null;
@@ -2218,12 +2224,12 @@ public static class VersionChecker
                             latestVersion = tagVersion;
                             if (IsNewVersionAvailable(latestVersion, currentVersion))
                             {
-                                if (onlyCheck && repo != "MFAAvalonia")
+                                if (repo != "MFAAvalonia")
                                     SaveRelease(tag, "body");
-                                if (!onlyCheck && repo != "MFAAvalonia")
-                                    SaveChangelog(tag, "body");
                             }
-                            (url, sha256) = await GetDownloadUrlFromGitHubReleaseAsync(latestVersion, owner, repo).ConfigureAwait(false);
+                            (url, sha256) = await GetDownloadUrlFromGitHubReleaseAsync(
+                                latestVersion, owner, repo, httpClient, webFallbackHttpClient,
+                                versionType == VersionType.Stable).ConfigureAwait(false);
                             return (url, latestVersion, sha256);
                         }
 
@@ -2238,10 +2244,31 @@ public static class VersionChecker
                         }
                     }
                 }
-                else if (response.StatusCode == HttpStatusCode.Forbidden && response.ReasonPhrase?.Contains("403") == true)
+                else if (IsGitHubRateLimited(response, await response.Content.ReadAsStringAsync().ConfigureAwait(false))
+                         && versionType == VersionType.Stable
+                         && string.IsNullOrWhiteSpace(targetVersion))
                 {
-                    LoggerHelper.Error("GitHub API 速率限制已超出，请稍后再试。");
-                    throw new Exception("GitHub API速率限制已超出，请稍后再试。");
+                    LoggerHelper.Warning("GitHub API 已限流，改用稳定版 Release 页面查询最新版本和资产。");
+                    var fallback = await GetLatestStableReleaseFromWebAsync(webFallbackHttpClient, owner, repo).ConfigureAwait(false);
+                    (url, sha256) = await SelectGitHubReleaseDownloadAsync(fallback.assets, webFallbackHttpClient, true).ConfigureAwait(false);
+                    try
+                    {
+                        var body = await GetGitHubReleaseBodyFromWebAsync(webFallbackHttpClient, owner, repo, fallback.version).ConfigureAwait(false);
+                        SaveRelease(new JObject
+                        {
+                            ["tag_name"] = fallback.version,
+                            ["body"] = body,
+                        }, "body");
+                    }
+                    catch (Exception ex)
+                    {
+                        SaveRelease(new JObject
+                        {
+                            ["tag_name"] = fallback.version,
+                            ["body"] = $"GitHub API 已限流，且无法读取 {fallback.version} 的网页发布说明。原因：{ex.Message}",
+                        }, "body");
+                    }
+                    return (url, fallback.version, sha256);
                 }
                 else
                 {
@@ -2263,14 +2290,152 @@ public static class VersionChecker
             latestVersion = bestVersion;
             if (IsNewVersionAvailable(latestVersion, currentVersion))
             {
-                if (onlyCheck && repo != "MFAAvalonia")
+                if (repo != "MFAAvalonia")
                     SaveRelease(bestRelease, "body");
-                if (!onlyCheck && repo != "MFAAvalonia")
-                    SaveChangelog(bestRelease, "body");
             }
-            (url, sha256) = await GetDownloadUrlFromGitHubReleaseAsync(latestVersion, owner, repo).ConfigureAwait(false);
+            (url, sha256) = await GetDownloadUrlFromGitHubReleaseAsync(
+                latestVersion, owner, repo, httpClient, webFallbackHttpClient,
+                versionType == VersionType.Stable).ConfigureAwait(false);
         }
         return (url, latestVersion, sha256);
+    }
+
+    /// <summary>
+    /// 获取当前资源仓库的最新稳定 Release 正文。失败时不复用旧版本说明，避免错误标记为“最新”。
+    /// </summary>
+    public static Task<ResourceReleaseNotes> GetLatestResourceReleaseNotesAsync(
+        HttpClient? httpClient = null,
+        HttpClient? webFallbackHttpClient = null)
+    {
+        var maaInterface = MaaProcessor.Interface;
+        var githubUrl = maaInterface?.Github ?? maaInterface?.Url;
+        if (string.IsNullOrWhiteSpace(githubUrl))
+            throw new InvalidOperationException("当前资源没有可查询的 GitHub 地址。");
+
+        var repo = GetRepoFromUrl(githubUrl);
+        return GetLatestGitHubReleaseNotesAsync(repo[0], repo[1], httpClient, webFallbackHttpClient);
+    }
+
+    /// <summary>
+    /// 查询最新稳定 Release。限流时先由网页重定向确认标签，再读取同标签网页正文。
+    /// </summary>
+    public static async Task<ResourceReleaseNotes> GetLatestGitHubReleaseNotesAsync(
+        string owner,
+        string repo,
+        HttpClient? httpClient = null,
+        HttpClient? webFallbackHttpClient = null,
+        string? cacheDirectory = null)
+    {
+        if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(repo))
+            throw new ArgumentException("GitHub 最新 Release 查询缺少仓库信息。");
+
+        cacheDirectory ??= AppPaths.ResourceDirectory;
+        var ownsHttpClient = httpClient is null;
+        httpClient ??= CreateHttpClientWithProxy();
+        using var ownedHttpClient = ownsHttpClient ? httpClient : null;
+        ConfigureGitHubApiClient(httpClient, "release-note", ownsHttpClient);
+
+        var ownsWebFallbackHttpClient = webFallbackHttpClient is null;
+        webFallbackHttpClient ??= CreateHttpClientWithProxy();
+        using var ownedWebFallbackHttpClient = ownsWebFallbackHttpClient ? webFallbackHttpClient : null;
+        ConfigureGitHubWebClient(webFallbackHttpClient);
+
+        var url = $"https://api.github.com/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/releases/latest";
+        using var response = await httpClient.GetAsync(url).ConfigureAwait(false);
+        var responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        string version;
+        string body;
+        if (response.IsSuccessStatusCode)
+        {
+            var release = JObject.Parse(responseContent);
+            version = release["tag_name"]?.ToString() ?? string.Empty;
+            body = release["body"]?.ToString() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(version) || !IsStableReleaseVersion(version))
+                throw new InvalidDataException("GitHub 最新 Release 没有可用的稳定版标签。");
+        }
+        else if (IsGitHubRateLimited(response, responseContent))
+        {
+            LoggerHelper.Warning("GitHub 最新 Release 正文接口已限流，改用网页确认标签和正文。");
+            version = await GetLatestStableReleaseTagFromWebAsync(webFallbackHttpClient, owner, repo).ConfigureAwait(false);
+            body = await GetGitHubReleaseBodyFromWebAsync(webFallbackHttpClient, owner, repo, version).ConfigureAwait(false);
+        }
+        else
+        {
+            throw new HttpRequestException($"请求 GitHub 最新 Release 说明失败：状态码={(int)response.StatusCode} {response.StatusCode}，原因={response.ReasonPhrase}");
+        }
+
+        if (string.IsNullOrWhiteSpace(body))
+            body = "该版本未提供发布说明。";
+        SaveVersionedReleaseNotes(cacheDirectory, version, body);
+        return new ResourceReleaseNotes(version, body, false);
+    }
+
+    /// <summary>
+    /// 按标签读取 GitHub Release 正文。限流时仅回退同标签网页；普通权限错误不会被静默降级。
+    /// </summary>
+    public static async Task<ResourceReleaseNotes> GetGitHubReleaseNotesAsync(
+        string owner,
+        string repo,
+        string version,
+        HttpClient? httpClient = null,
+        HttpClient? webFallbackHttpClient = null,
+        string? cacheDirectory = null)
+    {
+        if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(repo) || string.IsNullOrWhiteSpace(version))
+            throw new ArgumentException("GitHub Release 正文查询缺少仓库或版本信息。");
+
+        cacheDirectory ??= AppPaths.ResourceDirectory;
+        var ownsHttpClient = httpClient is null;
+        httpClient ??= CreateHttpClientWithProxy();
+        using var ownedHttpClient = ownsHttpClient ? httpClient : null;
+        ConfigureGitHubApiClient(httpClient, "release-note", ownsHttpClient);
+
+        var ownsWebFallbackHttpClient = webFallbackHttpClient is null;
+        webFallbackHttpClient ??= CreateHttpClientWithProxy();
+        using var ownedWebFallbackHttpClient = ownsWebFallbackHttpClient ? webFallbackHttpClient : null;
+        ConfigureGitHubWebClient(webFallbackHttpClient);
+
+        try
+        {
+            var url = $"https://api.github.com/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/releases/tags/{Uri.EscapeDataString(version)}";
+            using var response = await httpClient.GetAsync(url).ConfigureAwait(false);
+            var responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            string body;
+            if (response.IsSuccessStatusCode)
+            {
+                var release = JObject.Parse(responseContent);
+                var tag = release["tag_name"]?.ToString();
+                if (!string.Equals(tag, version, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"GitHub 返回的发布标签不匹配：期望={version}，实际={tag ?? "空"}。");
+                body = release["body"]?.ToString() ?? string.Empty;
+            }
+            else if (IsGitHubRateLimited(response, responseContent))
+            {
+                LoggerHelper.Warning($"GitHub Release 正文接口已限流，改用同标签网页：版本={version}");
+                body = await GetGitHubReleaseBodyFromWebAsync(webFallbackHttpClient, owner, repo, version).ConfigureAwait(false);
+            }
+            else
+            {
+                throw new HttpRequestException($"请求 GitHub Release 说明失败：状态码={(int)response.StatusCode} {response.StatusCode}，原因={response.ReasonPhrase}");
+            }
+
+            if (string.IsNullOrWhiteSpace(body))
+                body = "该版本未提供发布说明。";
+            SaveVersionedReleaseNotes(cacheDirectory, version, body);
+            return new ResourceReleaseNotes(version, body, false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (TryReadVersionedReleaseNotes(cacheDirectory, version, out var cached))
+            {
+                LoggerHelper.Warning($"获取 GitHub Release 正文失败，显示同版本缓存：版本={version}，原因={ex.Message}");
+                return new ResourceReleaseNotes(
+                    version,
+                    $"> 当前无法联网读取 {version} 的发布说明，以下是该版本的本地缓存。\n\n{cached}",
+                    true);
+            }
+            throw;
+        }
     }
 
     private static string ExtractSha256FromDigest(string? digest)
@@ -2460,7 +2625,13 @@ public static class VersionChecker
         return $@"\b{osOrFamily}-{arch}\b";
     }
 
-    private static async Task<(string downloadUrl, string sha256)> GetDownloadUrlFromGitHubReleaseAsync(string version, string owner, string repo)
+    private static async Task<(string downloadUrl, string sha256)> GetDownloadUrlFromGitHubReleaseAsync(
+        string version,
+        string owner,
+        string repo,
+        HttpClient httpClient,
+        HttpClient webFallbackHttpClient,
+        bool allowStableWebFallback)
     {
         string downloadUrl = string.Empty;
         string sha256 = string.Empty;
@@ -2469,17 +2640,7 @@ public static class VersionChecker
         var cpuArch = GetNormalizedArchitecture();
         LoggerHelper.Info($"目标系统：平台={osPlatform}，系统家族={osFamily}，架构={cpuArch}");
 
-        var releaseUrl = $"https://api.github.com/repos/{owner}/{repo}/releases/tags/{version}";
-        using var httpClient = CreateHttpClientWithProxy();
-        httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("MFAComponentUpdater/1.0");
-        httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-
-        if (!string.IsNullOrWhiteSpace(Instances.VersionUpdateSettingsUserControlModel.GitHubToken))
-        {
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
-                "Bearer",
-                Instances.VersionUpdateSettingsUserControlModel.GitHubToken);
-        }
+        var releaseUrl = $"https://api.github.com/repos/{owner}/{repo}/releases/tags/{Uri.EscapeDataString(version)}";
 
         try
         {
@@ -2497,32 +2658,16 @@ public static class VersionChecker
                             asset["browser_download_url"]?.ToString() ?? string.Empty,
                             ExtractSha256FromDigest(asset["digest"]?.ToString())))
                         .ToList();
-                    var runtimeAvailable = File.Exists(Path.Combine(
-                        AppContext.BaseDirectory,
-                        "runtime",
-                        "python",
-                        OperatingSystem.IsWindows() ? "python.exe" : "python"));
-                    var bestAsset = SelectGitHubReleaseAsset(
-                        releaseAssets,
-                        osPlatform,
-                        osFamily,
-                        cpuArch,
-                        runtimeAvailable);
-                    downloadUrl = bestAsset.Url;
-                    sha256 = bestAsset.Sha256;
-                    LoggerHelper.Info(
-                        $"已选择 GitHub 更新归档：名称={bestAsset.Name}，runtimeAvailable={runtimeAvailable}");
-
-                    if (string.IsNullOrWhiteSpace(sha256))
-                    {
-                        var sidecar = releaseAssets.FirstOrDefault(asset =>
-                            asset.Name.Equals(bestAsset.Name + ".sha256", StringComparison.OrdinalIgnoreCase));
-                        if (sidecar is not null && !string.IsNullOrWhiteSpace(sidecar.Url))
-                        {
-                            sha256 = await DownloadSha256SidecarAsync(httpClient, sidecar.Url).ConfigureAwait(false);
-                        }
-                    }
+                    (downloadUrl, sha256) = await SelectGitHubReleaseDownloadAsync(
+                        releaseAssets, httpClient, false).ConfigureAwait(false);
                 }
+            }
+            else if (allowStableWebFallback
+                     && IsGitHubRateLimited(response, await response.Content.ReadAsStringAsync().ConfigureAwait(false)))
+            {
+                LoggerHelper.Warning($"GitHub Release 标签接口已限流，改用网页资产列表：版本={version}");
+                var assets = await GetGitHubReleaseAssetsFromWebAsync(webFallbackHttpClient, owner, repo, version).ConfigureAwait(false);
+                (downloadUrl, sha256) = await SelectGitHubReleaseDownloadAsync(assets, webFallbackHttpClient, true).ConfigureAwait(false);
             }
             else
             {
@@ -2545,6 +2690,236 @@ public static class VersionChecker
         if (!match.Success)
             throw new InvalidDataException("GitHub Release 的 SHA256 校验文件格式无效。");
         return match.Value.ToLowerInvariant();
+    }
+
+    private static void ConfigureGitHubApiClient(HttpClient httpClient, string userAgent, bool includeToken)
+    {
+        if (!httpClient.DefaultRequestHeaders.UserAgent.Any())
+            httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd(userAgent);
+        if (!httpClient.DefaultRequestHeaders.Accept.Any())
+            httpClient.DefaultRequestHeaders.Accept.TryParseAdd("application/vnd.github+json");
+
+        if (includeToken && !string.IsNullOrWhiteSpace(Instances.VersionUpdateSettingsUserControlModel.GitHubToken))
+        {
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer",
+                Instances.VersionUpdateSettingsUserControlModel.GitHubToken);
+        }
+    }
+
+    private static void ConfigureGitHubWebClient(HttpClient httpClient)
+    {
+        httpClient.DefaultRequestHeaders.Authorization = null;
+        httpClient.DefaultRequestHeaders.Accept.Clear();
+        httpClient.DefaultRequestHeaders.Accept.TryParseAdd("text/html");
+        if (!httpClient.DefaultRequestHeaders.UserAgent.Any())
+            httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("MFAComponentUpdater/1.0");
+    }
+
+    private static bool IsGitHubRateLimited(HttpResponseMessage response, string responseContent)
+    {
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            return true;
+        if (response.StatusCode != HttpStatusCode.Forbidden)
+            return false;
+
+        if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var values)
+            && values.Any(value => value.Trim() == "0"))
+            return true;
+        return response.ReasonPhrase?.Contains("rate limit", StringComparison.OrdinalIgnoreCase) == true
+               || responseContent.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<(string version, List<GitHubReleaseAsset> assets)> GetLatestStableReleaseFromWebAsync(
+        HttpClient httpClient,
+        string owner,
+        string repo)
+    {
+        var version = await GetLatestStableReleaseTagFromWebAsync(httpClient, owner, repo).ConfigureAwait(false);
+        var assets = await GetGitHubReleaseAssetsFromWebAsync(httpClient, owner, repo, version).ConfigureAwait(false);
+        return (version, assets);
+    }
+
+    private static async Task<string> GetLatestStableReleaseTagFromWebAsync(HttpClient httpClient, string owner, string repo)
+    {
+        var latestUrl = $"https://github.com/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/releases/latest";
+        using var response = await httpClient.GetAsync(latestUrl).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new Exception($"GitHub Release 页面请求失败：状态码={(int)response.StatusCode} {response.StatusCode}");
+
+        var effectiveUri = response.RequestMessage?.RequestUri;
+        if (!TryGetGitHubReleaseTag(effectiveUri, owner, repo, out var version) || !IsStableReleaseVersion(version))
+            throw new InvalidDataException("GitHub Release 页面没有返回可用的稳定版标签。");
+        return version;
+    }
+
+    private static async Task<List<GitHubReleaseAsset>> GetGitHubReleaseAssetsFromWebAsync(
+        HttpClient httpClient,
+        string owner,
+        string repo,
+        string version)
+    {
+        var escapedVersion = Uri.EscapeDataString(version);
+        var url = $"https://github.com/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/releases/expanded_assets/{escapedVersion}";
+        using var response = await httpClient.GetAsync(url).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new Exception($"GitHub Release 资产页面请求失败：状态码={(int)response.StatusCode} {response.StatusCode}");
+
+        var assets = new List<GitHubReleaseAsset>();
+        foreach (Match match in Regex.Matches(content, @"href\s*=\s*[""'](?<href>[^""']+)[""']", RegexOptions.IgnoreCase))
+        {
+            var href = WebUtility.HtmlDecode(match.Groups["href"].Value);
+            if (!TryGetGitHubReleaseAsset(href, owner, repo, version, out var asset))
+                continue;
+            if (assets.All(item => !item.Name.Equals(asset.Name, StringComparison.OrdinalIgnoreCase)))
+                assets.Add(asset);
+        }
+
+        if (assets.Count == 0)
+            throw new InvalidDataException("GitHub Release 页面没有可用的资产下载链接。");
+        return assets;
+    }
+
+    private static async Task<string> GetGitHubReleaseBodyFromWebAsync(
+        HttpClient httpClient,
+        string owner,
+        string repo,
+        string version)
+    {
+        var url = $"https://github.com/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/releases/tag/{Uri.EscapeDataString(version)}";
+        using var response = await httpClient.GetAsync(url).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"GitHub Release 页面请求失败：状态码={(int)response.StatusCode} {response.StatusCode}");
+
+        var body = ExtractGitHubReleaseBody(content);
+        if (string.IsNullOrWhiteSpace(body))
+            throw new InvalidDataException("GitHub Release 页面没有可读取的发布说明。");
+        return body;
+    }
+
+    /// <summary>
+    /// GitHub 的 Release 正文容器会嵌套 div；按标签平衡提取，避免正则在首个子 div 截断正文。
+    /// </summary>
+    internal static string ExtractGitHubReleaseBody(string html)
+    {
+        var start = Regex.Match(
+            html,
+            @"<div\b(?=[^>]*(?:data-test-selector\s*=\s*[\""']body-content[\""']|class\s*=\s*[\""'][^\""']*\bmarkdown-body\b[^\""']*[\""']))[^>]*>",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!start.Success)
+            return string.Empty;
+
+        var divTags = Regex.Matches(html[start.Index..], @"</?div\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var depth = 0;
+        var end = -1;
+        foreach (Match tag in divTags)
+        {
+            depth += tag.Value.StartsWith("</", StringComparison.Ordinal) ? -1 : 1;
+            if (depth == 0)
+            {
+                end = start.Index + tag.Index + tag.Length;
+                break;
+            }
+        }
+        if (end < 0)
+            return string.Empty;
+
+        var fragment = html[start.Index..end];
+        fragment = Regex.Replace(fragment, @"<\s*br\s*/?\s*>", "\n", RegexOptions.IgnoreCase);
+        fragment = Regex.Replace(fragment, @"</\s*(?:p|li|h[1-6]|div|pre|blockquote)\s*>", "\n", RegexOptions.IgnoreCase);
+        fragment = Regex.Replace(fragment, @"<[^>]+>", string.Empty);
+        return WebUtility.HtmlDecode(fragment).Trim();
+    }
+
+    private static bool TryGetGitHubReleaseTag(Uri? uri, string owner, string repo, out string version)
+    {
+        version = string.Empty;
+        if (uri is null
+            || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length != 5
+            || !segments[0].Equals(owner, StringComparison.OrdinalIgnoreCase)
+            || !segments[1].Equals(repo, StringComparison.OrdinalIgnoreCase)
+            || !segments[2].Equals("releases", StringComparison.OrdinalIgnoreCase)
+            || !segments[3].Equals("tag", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        version = Uri.UnescapeDataString(segments[4]);
+        return !string.IsNullOrWhiteSpace(version);
+    }
+
+    private static bool TryGetGitHubReleaseAsset(
+        string href,
+        string owner,
+        string repo,
+        string version,
+        out GitHubReleaseAsset asset)
+    {
+        asset = new GitHubReleaseAsset(string.Empty, string.Empty, string.Empty);
+        if (!Uri.TryCreate(new Uri("https://github.com"), href, out var uri)
+            || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length != 6
+            || !segments[0].Equals(owner, StringComparison.OrdinalIgnoreCase)
+            || !segments[1].Equals(repo, StringComparison.OrdinalIgnoreCase)
+            || !segments[2].Equals("releases", StringComparison.OrdinalIgnoreCase)
+            || !segments[3].Equals("download", StringComparison.OrdinalIgnoreCase)
+            || !Uri.UnescapeDataString(segments[4]).Equals(version, StringComparison.Ordinal))
+            return false;
+
+        var name = Uri.UnescapeDataString(segments[5]);
+        if (string.IsNullOrWhiteSpace(name) || name.Contains('/') || name.Contains('\\'))
+            return false;
+
+        var builder = new UriBuilder(uri) { Query = string.Empty, Fragment = string.Empty };
+        asset = new GitHubReleaseAsset(name, builder.Uri.AbsoluteUri, string.Empty);
+        return true;
+    }
+
+    private static bool IsStableReleaseVersion(string version) =>
+        !version.Contains("alpha", StringComparison.OrdinalIgnoreCase)
+        && !version.Contains("beta", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<(string downloadUrl, string sha256)> SelectGitHubReleaseDownloadAsync(
+        IEnumerable<GitHubReleaseAsset> releaseAssets,
+        HttpClient httpClient,
+        bool requireSha256Sidecar)
+    {
+        var (osPlatform, osFamily) = GetNormalizedOSInfo();
+        var cpuArch = GetNormalizedArchitecture();
+        var runtimeAvailable = File.Exists(Path.Combine(
+            AppContext.BaseDirectory,
+            "runtime",
+            "python",
+            OperatingSystem.IsWindows() ? "python.exe" : "python"));
+        var bestAsset = SelectGitHubReleaseAsset(releaseAssets, osPlatform, osFamily, cpuArch, runtimeAvailable);
+        var sha256 = bestAsset.Sha256;
+
+        if (string.IsNullOrWhiteSpace(sha256))
+        {
+            var sidecar = releaseAssets.FirstOrDefault(asset =>
+                asset.Name.Equals(bestAsset.Name + ".sha256", StringComparison.OrdinalIgnoreCase));
+            if (sidecar is null || string.IsNullOrWhiteSpace(sidecar.Url))
+            {
+                if (requireSha256Sidecar)
+                    throw new InvalidDataException($"GitHub Release 缺少更新归档的同名 SHA256 校验文件：{bestAsset.Name}.sha256");
+            }
+            else
+            {
+                sha256 = await DownloadSha256SidecarAsync(httpClient, sidecar.Url).ConfigureAwait(false);
+            }
+        }
+
+        LoggerHelper.Info($"已选择 GitHub 更新归档：名称={bestAsset.Name}，runtimeAvailable={runtimeAvailable}");
+        return (bestAsset.Url, sha256);
     }
 
 
@@ -2648,7 +3023,7 @@ public static class VersionChecker
                 }
                 if (!onlyCheck && !isUI && data != null)
                 {
-                    SaveChangelog(data, "release_note");
+                    SaveRelease(data, "release_note");
                 }
             }
             if (exception != null)
@@ -3523,12 +3898,117 @@ public static class VersionChecker
                 Directory.CreateDirectory(resourceDirectory);
                 var filePath = Path.Combine(resourceDirectory, ChangelogViewModel.ReleaseFileName);
                 File.WriteAllText(filePath, bodyContent);
+                var version = releaseData?["tag_name"]?.ToString() ?? releaseData?["version_name"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(version))
+                    SaveVersionedReleaseNotes(resourceDirectory, version, bodyContent);
                 LoggerHelper.Info($"已保存发布说明文件：文件={filePath}，长度={bodyContent.Length}");
             }
         }
         catch (Exception ex)
         {
             LoggerHelper.Error($"保存发布说明文件失败：文件={ChangelogViewModel.ReleaseFileName}，原因={ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// 仅在更新包已完成下载、校验和结构验证后保存待展示说明。
+    /// 启动时还会再次核对已安装版本，覆盖失败不会误弹新版本公告。
+    /// </summary>
+    private static async Task PrepareResourceChangelogAfterValidatedUpdateAsync(
+        string owner,
+        string repo,
+        string version,
+        bool requiresInstallManifest)
+    {
+        try
+        {
+            var release = await GetGitHubReleaseNotesAsync(owner, repo, version).ConfigureAwait(false);
+            if (!release.Version.Equals(version, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"待更新发布说明版本不匹配：期望={version}，实际={release.Version}。");
+
+            SaveChangelog(new JObject
+            {
+                ["tag_name"] = release.Version,
+                ["body"] = release.Content,
+            }, "body");
+            GlobalConfiguration.SetValue(ConfigurationKeys.PendingResourceChangelogVersion, release.Version);
+            GlobalConfiguration.SetValue(
+                ConfigurationKeys.PendingResourceChangelogRequiresManifest,
+                requiresInstallManifest.ToString());
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"更新包已验证，但未能准备发布说明：版本={version}，原因={ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 只展示与已安装资源版本相同、且在更新包验证后写入的说明。
+    /// </summary>
+    public static void ShowPendingResourceChangelogAfterSuccessfulUpdate()
+    {
+        var pendingVersion = GlobalConfiguration.GetValue(ConfigurationKeys.PendingResourceChangelogVersion, string.Empty);
+        var requiresInstallManifest = Convert.ToBoolean(GlobalConfiguration.GetValue(
+            ConfigurationKeys.PendingResourceChangelogRequiresManifest,
+            bool.FalseString));
+        var installedVersion = GetResourceVersion();
+        if (string.IsNullOrWhiteSpace(installedVersion))
+            installedVersion = MaaProcessor.Interface?.Version ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(pendingVersion))
+            return;
+        if (!CanShowPendingResourceChangelog(pendingVersion, installedVersion))
+        {
+            LoggerHelper.Warning($"跳过未完成资源更新的发布说明：待展示={pendingVersion}，已安装={installedVersion}");
+            return;
+        }
+        if (requiresInstallManifest && !HasInstalledUpdateManifestVersion(AppPaths.InstallRoot, pendingVersion))
+        {
+            LoggerHelper.Warning($"跳过尚未写入更新清单的发布说明：版本={pendingVersion}");
+            return;
+        }
+
+        if (TryReadVersionedReleaseNotes(AppPaths.ResourceDirectory, pendingVersion, out var content))
+            DispatcherHelper.RunOnMainThread(() => ChangelogViewModel.ShowChangelogContent(content));
+        else
+            LoggerHelper.Warning($"待展示的发布说明缓存不存在：版本={pendingVersion}");
+        GlobalConfiguration.SetValue(ConfigurationKeys.PendingResourceChangelogVersion, string.Empty);
+        GlobalConfiguration.SetValue(ConfigurationKeys.PendingResourceChangelogRequiresManifest, bool.FalseString);
+    }
+
+    internal static bool CanShowPendingResourceChangelog(string? pendingVersion, string? installedVersion) =>
+        !string.IsNullOrWhiteSpace(pendingVersion)
+        && !string.IsNullOrWhiteSpace(installedVersion)
+        && AreEquivalentReleaseVersions(pendingVersion, installedVersion);
+
+    internal static bool HasInstalledUpdateManifestVersion(string installRoot, string expectedVersion)
+    {
+        try
+        {
+            var path = Path.Combine(installRoot, "update-manifest.json");
+            if (!File.Exists(path))
+                return false;
+            var manifest = JObject.Parse(File.ReadAllText(path));
+            return AreEquivalentReleaseVersions(expectedVersion, manifest["version"]?.ToString());
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"读取更新清单失败：原因={ex.Message}");
+            return false;
+        }
+    }
+
+    internal static bool AreEquivalentReleaseVersions(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return false;
+        try
+        {
+            return ParseAndNormalizeVersion(left) == ParseAndNormalizeVersion(right);
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"比较发布版本失败：left={left}，right={right}，原因={ex.Message}");
+            return false;
         }
     }
 
@@ -3543,6 +4023,9 @@ public static class VersionChecker
                 Directory.CreateDirectory(resourceDirectory);
                 var filePath = Path.Combine(resourceDirectory, ChangelogViewModel.ChangelogFileName);
                 File.WriteAllText(filePath, bodyContent);
+                var version = releaseData?["tag_name"]?.ToString() ?? releaseData?["version_name"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(version))
+                    SaveVersionedReleaseNotes(resourceDirectory, version, bodyContent);
                 LoggerHelper.Info($"已保存更新日志文件：文件={filePath}，长度={bodyContent.Length}");
                 GlobalConfiguration.SetValue(ConfigurationKeys.DoNotShowChangelogAgain, bool.FalseString);
             }
@@ -3551,6 +4034,47 @@ public static class VersionChecker
         {
             LoggerHelper.Error($"保存更新日志文件失败：文件={ChangelogViewModel.ChangelogFileName}，原因={ex.Message}", ex);
         }
+    }
+
+    private static void SaveVersionedReleaseNotes(string resourceDirectory, string version, string body)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(version) || string.IsNullOrWhiteSpace(body))
+                return;
+            var directory = Path.Combine(resourceDirectory, "release-cache");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, GetReleaseNotesCacheFileName(version)), body);
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"保存版本化发布说明缓存失败：版本={version}，原因={ex.Message}");
+        }
+    }
+
+    private static bool TryReadVersionedReleaseNotes(string resourceDirectory, string version, out string body)
+    {
+        body = string.Empty;
+        try
+        {
+            var path = Path.Combine(resourceDirectory, "release-cache", GetReleaseNotesCacheFileName(version));
+            if (!File.Exists(path))
+                return false;
+            body = File.ReadAllText(path);
+            return !string.IsNullOrWhiteSpace(body);
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"读取版本化发布说明缓存失败：版本={version}，原因={ex.Message}");
+            return false;
+        }
+    }
+
+    private static string GetReleaseNotesCacheFileName(string version)
+    {
+        var invalid = new string(Path.GetInvalidFileNameChars());
+        var safeVersion = Regex.Replace(version, $"[{Regex.Escape(invalid)}]", "_");
+        return $"{safeVersion}.md";
     }
 
 

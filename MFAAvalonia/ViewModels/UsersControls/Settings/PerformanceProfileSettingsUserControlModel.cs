@@ -43,9 +43,6 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private int _timingOffsetMs;
     [ObservableProperty] private int _frameTimeoutMs = 150;
     [ObservableProperty] private int _playfieldTimeoutMs = 1500;
-    [ObservableProperty] private bool _lifeSafetyEnabled = true;
-    [ObservableProperty] private int _lifeExitThresholdPercent = 20;
-    [ObservableProperty] private bool _rehearsalIgnoreLifeSafety = true;
     [ObservableProperty] private bool _skipProcessConflictCleanup;
     [ObservableProperty] private bool _gameEffectSettingsEnabled = true;
     [ObservableProperty] private int _noteSkinType = 1;
@@ -95,9 +92,6 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnTimingOffsetMsChanged(int value) => ScheduleProfileAutoSave();
     partial void OnFrameTimeoutMsChanged(int value) => ScheduleProfileAutoSave();
     partial void OnPlayfieldTimeoutMsChanged(int value) => ScheduleProfileAutoSave();
-    partial void OnLifeSafetyEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
-    partial void OnLifeExitThresholdPercentChanged(int value) => ScheduleRuntimeAutoSave();
-    partial void OnRehearsalIgnoreLifeSafetyChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnSkipProcessConflictCleanupChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnGameEffectSettingsEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNoteSkinTypeChanged(int value) => ScheduleRuntimeAutoSave();
@@ -126,16 +120,18 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                 {
                     ["operation"] = "list", ["difficulty"] = Difficulty
                 });
+                var selection = (JObject?)result["selection"];
+                var selectedName = selection?.Value<string>("profile");
                 Profiles.Clear();
                 foreach (var token in result["profiles"] as JArray ?? [])
-                    Profiles.Add(new PerformanceProfileItem((JObject)token));
+                {
+                    var value = (JObject)token;
+                    Profiles.Add(new PerformanceProfileItem(
+                        value,
+                        value.Value<string>("filename") == selectedName));
+                }
 
                 var runtime = (JObject?)result["runtime_options"];
-                LifeSafetyEnabled = runtime?.Value<bool?>("life_safety_enabled") ?? true;
-                LifeExitThresholdPercent = Math.Clamp(
-                    (runtime?.Value<int?>("life_exit_threshold") ?? 200) / 10, 1, 99);
-                RehearsalIgnoreLifeSafety =
-                    runtime?.Value<bool?>("rehearsal_ignore_life_safety") ?? true;
                 SkipProcessConflictCleanup =
                     runtime?.Value<bool?>("skip_process_conflict_cleanup") ?? false;
                 GameEffectSettingsEnabled =
@@ -167,17 +163,17 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     ArtifactLocations.Add(item);
                 ChartCatalogText = await ProfileManagerClient.LoadChartCatalogStatusAsync();
 
-                var selection = (JObject?)result["selection"];
-                var selectedName = selection?.Value<string>("profile");
                 SelectedProfile = Profiles.FirstOrDefault(profile => profile.Filename == selectedName)
                                   ?? Profiles.FirstOrDefault();
-                var mode = selection?.Value<string>("mode") == "pinned" ? "钉选" : "自动";
+                var mode = selection?.Value<string>("mode") == "pinned"
+                    ? "手动选择"
+                    : "自动匹配";
                 var source = selection?.Value<string>("source_difficulty") ?? "无";
                 var error = selection?.Value<string>("error");
                 SelectionText = string.IsNullOrEmpty(error)
-                    ? $"{mode} · {selectedName ?? "无可用 Profile"} · 来源难度 {source}"
-                    : $"{mode}已阻止正式演奏：{error}";
-                StatusText = $"共 {Profiles.Count} 个本机 Profile；修改后自动保存";
+                    ? $"当前使用：{selectedName ?? "无可用 Profile"} · {mode} · 来源难度 {source}"
+                    : $"当前选择已阻止正式演奏：{error}";
+                StatusText = $"共 {Profiles.Count} 个本机 Profile；双击行可设为当前，参数修改后自动保存";
                 _runtimeOptionsLoaded = true;
             });
         }
@@ -197,9 +193,6 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
 
     private JObject CaptureRuntimeOptions() => new()
     {
-        ["life_safety_enabled"] = LifeSafetyEnabled,
-        ["life_exit_threshold"] = LifeExitThresholdPercent * 10,
-        ["rehearsal_ignore_life_safety"] = RehearsalIgnoreLifeSafety,
         ["skip_process_conflict_cleanup"] = SkipProcessConflictCleanup,
         ["game_effect_settings_enabled"] = GameEffectSettingsEnabled,
         ["note_skin_type"] = NoteSkinType,
@@ -384,37 +377,28 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         });
     }
 
-    [RelayCommand]
-    private async Task PinAsync()
+    public async Task SetCurrentProfileAsync(PerformanceProfileItem? profile)
     {
-        if (SelectedProfile == null) return;
+        if (profile == null) return;
+        SelectedProfile = profile;
         var succeeded = await RunAsync(async () =>
         {
-            // 钉选跟随所选文件自身的校准难度；难度下拉框只负责筛选列表，
-            // 不参与钉选槽位，避免把 Expert Profile 误钉进 Easy 槽。
-            await ProfileManagerClient.InvokeAsync(new JObject
-            {
-                ["operation"] = "pin", ["difficulty"] = SelectedProfile.Difficulty,
-                ["profile"] = SelectedProfile.Filename
-            });
+            // 当前选择属于任务难度槽位；高难度 Profile 可作为兼容来源，
+            // 但不能把 Easy/Hard 的选择误写进 Expert/Special 槽位。
+            await ProfileManagerClient.InvokeAsync(
+                CreateSetCurrentProfileRequest(Difficulty, profile.Filename));
         });
         if (succeeded) await RefreshAsync();
     }
 
-    [RelayCommand]
-    private async Task UseAutomaticAsync()
+    internal static JObject CreateSetCurrentProfileRequest(
+        string difficulty,
+        string filename) => new()
     {
-        var succeeded = await RunAsync(async () =>
-        {
-            await ProfileManagerClient.InvokeAsync(new JObject
-            {
-                // 与钉选一致：按所选文件自身的难度解钉；未选中时退回下拉框槽位。
-                ["operation"] = "unpin",
-                ["difficulty"] = SelectedProfile?.Difficulty ?? Difficulty
-            });
-        });
-        if (succeeded) await RefreshAsync();
-    }
+        ["operation"] = "pin",
+        ["difficulty"] = difficulty,
+        ["profile"] = filename
+    };
 
     private async Task<bool> RunAsync(Func<Task> action)
     {
@@ -568,7 +552,12 @@ public sealed class ArtifactLocationItem
 public sealed class PerformanceProfileItem
 {
     private readonly JObject _value;
-    public PerformanceProfileItem(JObject value) => _value = value;
+    public PerformanceProfileItem(JObject value, bool isCurrentSelection = false)
+    {
+        _value = value;
+        IsCurrentSelection = isCurrentSelection;
+    }
+    public bool IsCurrentSelection { get; }
     public string Filename => _value.Value<string>("filename") ?? string.Empty;
     public string Difficulty => _value.Value<string>("difficulty") ?? "?";
     public bool Accepted => _value.Value<bool?>("accepted") == true;

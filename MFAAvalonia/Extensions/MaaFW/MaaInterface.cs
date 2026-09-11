@@ -1316,6 +1316,13 @@ public partial class MaaInterface
     [JsonProperty("label")]
     public string? Label { get; set; }
 
+    [JsonProperty("icon")]
+    public string? Icon { get; set; }
+
+    /// <summary>关于页面使用的项目图标；为空时回退到通用 icon。</summary>
+    [JsonProperty("about_icon")]
+    public string? AboutIcon { get; set; }
+
     [JsonProperty("version")]
     public string? Version { get; set; }
 
@@ -1549,6 +1556,8 @@ public partial class MaaInterface
         if (!string.IsNullOrEmpty(other.Url)) Url = other.Url;
         if (!string.IsNullOrEmpty(other.Title)) Title = other.Title;
         if (!string.IsNullOrEmpty(other.CustomTitle)) CustomTitle = other.CustomTitle;
+        if (!string.IsNullOrEmpty(other.Icon)) Icon = other.Icon;
+        if (!string.IsNullOrEmpty(other.AboutIcon)) AboutIcon = other.AboutIcon;
         if (!string.IsNullOrEmpty(other.DefaultController)) DefaultController = other.DefaultController;
         if (other.LockController) LockController = other.LockController;
         if (!string.IsNullOrEmpty(other.Contact)) Contact = other.Contact;

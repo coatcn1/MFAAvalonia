@@ -167,6 +167,39 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
     Assert(
         options.Value<bool>("judgement_assist_effect"),
         "judgement assist must default to enabled");
+    Assert(
+        options["life_safety_enabled"] == null
+        && options["life_exit_threshold"] == null
+        && options["rehearsal_ignore_life_safety"] == null,
+        "removed life protection options must not be persisted");
+}
+
+static void ProfileCurrentSelectionMarkerIsIndependentFromGridSelection()
+{
+    var current = new PerformanceProfileItem(new JObject
+    {
+        ["filename"] = "expert-current.json",
+        ["difficulty"] = "Expert",
+    }, isCurrentSelection: true);
+    var inspected = new PerformanceProfileItem(new JObject
+    {
+        ["filename"] = "special-inspected.json",
+        ["difficulty"] = "Special",
+    });
+
+    Assert(current.IsCurrentSelection, "current profile marker was not retained");
+    Assert(!inspected.IsCurrentSelection, "ordinary grid selection was marked current");
+}
+
+static void ProfileSelectionRequestUsesTaskDifficulty()
+{
+    var request = PerformanceProfileSettingsUserControlModel.CreateSetCurrentProfileRequest(
+        "Easy",
+        "expert-current.json");
+
+    Assert(request.Value<string>("operation") == "pin", "profile selection operation changed");
+    Assert(request.Value<string>("difficulty") == "Easy", "profile selection used source difficulty");
+    Assert(request.Value<string>("profile") == "expert-current.json", "profile selection filename changed");
 }
 
 static void CalibrationRecordsReadNestedSessionResults()
@@ -403,18 +436,345 @@ static async Task NativeDownloaderRejectsShaMismatchAsync()
     }
 }
 
+static async Task AboutMetadataMergeAndLateLoadAsync()
+{
+    var metadata = new JObject
+    {
+        ["name"] = "MaaBanGDream",
+        ["label"] = "BanG Dream! 自动化（MaaFramework）",
+        ["version"] = "1.3.6",
+        ["icon"] = "docs/assets/maabangdream-logo-v1.png",
+        ["about_icon"] = "docs/assets/maabangdream-about-v1.png",
+    }.ToObject<MFAAvalonia.Extensions.MaaFW.MaaInterface>()
+      ?? throw new InvalidOperationException("failed to create About metadata");
+    Assert(metadata.Icon == "docs/assets/maabangdream-logo-v1.png",
+        "top-level interface icon was not retained for the About page");
+    Assert(metadata.AboutIcon == "docs/assets/maabangdream-about-v1.png",
+        "dedicated About icon was not retained");
+
+    var baseMetadata = new MFAAvalonia.Extensions.MaaFW.MaaInterface
+    {
+        Icon = "base-icon.png",
+        AboutIcon = "base-about.png",
+    };
+    baseMetadata.Merge(metadata);
+    Assert(baseMetadata.Icon == "docs/assets/maabangdream-logo-v1.png",
+        "merged interface lost the top-level icon");
+    Assert(baseMetadata.AboutIcon == "docs/assets/maabangdream-about-v1.png",
+        "merged interface lost the dedicated About icon");
+
+    var tempDirectory = Path.Combine(Path.GetTempPath(), $"mfa-about-{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(Path.Combine(tempDirectory, "docs"));
+        await File.WriteAllTextAsync(Path.Combine(tempDirectory, "docs", "about.md"), "项目简介");
+        await File.WriteAllTextAsync(Path.Combine(tempDirectory, "docs", "contact.md"), "联系方式");
+        await File.WriteAllTextAsync(Path.Combine(tempDirectory, "docs", "license.md"), "许可证");
+        metadata.Description = "docs/about.md";
+        metadata.Contact = "docs/contact.md";
+        metadata.License = "docs/license.md";
+        var content = await MFAAvalonia.Extensions.MaaFW.MaaProcessor.ResolveSettingsMetadataContentAsync(
+            metadata, tempDirectory);
+        Assert(content.description == "项目简介" && content.contact == "联系方式" && content.license == "许可证",
+            "late SettingsViewModel metadata refresh did not resolve all interface content");
+    }
+    finally
+    {
+        if (Directory.Exists(tempDirectory))
+            Directory.Delete(tempDirectory, true);
+    }
+}
+
+static async Task GitHubReleaseNotesUseExactTagAndWebFallbackAsync()
+{
+    var tempDirectory = Path.Combine(Path.GetTempPath(), $"mfa-release-{Guid.NewGuid():N}");
+    try
+    {
+        var mismatchHandler = new GitHubRouteHandler(request =>
+            GitHubResponse(request, HttpStatusCode.OK, "{\"tag_name\":\"v1.3.6\",\"body\":\"旧版本\"}"));
+        using (var mismatchClient = new HttpClient(mismatchHandler))
+        {
+            try
+            {
+                await VersionChecker.GetGitHubReleaseNotesAsync(
+                    "owner", "repo", "v1.3.7", mismatchClient, mismatchClient, tempDirectory);
+                throw new InvalidOperationException("mismatched release tag was accepted");
+            }
+            catch (InvalidDataException)
+            {
+            }
+        }
+
+        var handler = new GitHubRouteHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/releases/tags/v1.3.6", StringComparison.Ordinal))
+                return GitHubResponse(request, HttpStatusCode.Forbidden, "", reasonPhrase: "rate limit exceeded");
+            if (path.EndsWith("/releases/tag/v1.3.6", StringComparison.Ordinal))
+                return GitHubResponse(request, HttpStatusCode.OK,
+                    "<div data-test-selector=\"body-content\" class=\"markdown-body\"><p>最新说明</p><div><strong>嵌套正文</strong></div></div>");
+            throw new InvalidOperationException($"unexpected release-note request: {request.RequestUri}");
+        });
+        using var client = new HttpClient(handler);
+        var result = await VersionChecker.GetGitHubReleaseNotesAsync(
+            "owner", "repo", "v1.3.6", client, client, tempDirectory);
+        Assert(!result.FromCache && result.Content.Contains("最新说明") && result.Content.Contains("嵌套正文"),
+            "rate-limited release body did not use the same-tag GitHub web page");
+        Assert(handler.Requests.Any(uri => uri.AbsolutePath.EndsWith("/releases/tag/v1.3.6", StringComparison.Ordinal)),
+            "release body fallback queried a page other than the requested tag");
+
+        var cacheHandler = new GitHubRouteHandler(request =>
+            GitHubResponse(request, HttpStatusCode.Forbidden, "bad credentials"));
+        using var cacheClient = new HttpClient(cacheHandler);
+        var cached = await VersionChecker.GetGitHubReleaseNotesAsync(
+            "owner", "repo", "v1.3.6", cacheClient, cacheClient, tempDirectory);
+        Assert(cached.FromCache && cached.Content.Contains("本地缓存") && cached.Content.Contains("最新说明"),
+            "same-version release cache was not clearly identified after a network failure");
+        Assert(cacheHandler.Requests.All(uri => !uri.AbsolutePath.EndsWith("/releases/tag/v1.3.6", StringComparison.Ordinal)),
+            "ordinary forbidden response must not use the release web fallback");
+    }
+    finally
+    {
+        Directory.Delete(tempDirectory, true);
+    }
+}
+
+static async Task GitHubLatestReleaseNotesIncludeLatestTagAsync()
+{
+    var tempDirectory = Path.Combine(Path.GetTempPath(), $"mfa-latest-release-{Guid.NewGuid():N}");
+    try
+    {
+        var handler = new GitHubRouteHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.RequestUri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase)
+                && path.EndsWith("/releases/latest", StringComparison.Ordinal))
+                return GitHubResponse(request, HttpStatusCode.Forbidden, "", new Uri("https://github.com/owner/repo/releases/tag/v1.3.8"), reasonPhrase: "rate limit exceeded");
+            if (request.RequestUri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+                && path.EndsWith("/releases/latest", StringComparison.Ordinal))
+                return GitHubResponse(request, HttpStatusCode.OK, "", new Uri("https://github.com/owner/repo/releases/tag/v1.3.8"));
+            if (path.EndsWith("/releases/tag/v1.3.8", StringComparison.Ordinal))
+                return GitHubResponse(request, HttpStatusCode.OK,
+                    "<div data-test-selector=\"body-content\" class=\"markdown-body\"><p>最新版本说明</p></div>");
+            throw new InvalidOperationException($"unexpected latest release request: {request.RequestUri}");
+        });
+        using var client = new HttpClient(handler);
+        var latest = await VersionChecker.GetLatestGitHubReleaseNotesAsync(
+            "owner", "repo", client, client, tempDirectory);
+        Assert(latest.Version == "v1.3.8" && latest.Content.Contains("最新版本说明"),
+            "latest release body did not report the redirected latest tag");
+        Assert(handler.Requests.Any(uri => uri.AbsolutePath.EndsWith("/releases/latest", StringComparison.Ordinal)),
+            "latest release lookup did not use the latest endpoint");
+        Assert(handler.Requests.Any(uri => uri.AbsolutePath.EndsWith("/releases/tag/v1.3.8", StringComparison.Ordinal)),
+            "rate-limited latest release did not read the redirected tag body");
+
+        Assert(VersionChecker.CanShowPendingResourceChangelog("v1.3.8", "1.3.8"),
+            "GitHub tag and installed interface version were not treated as the same release");
+        Assert(!VersionChecker.CanShowPendingResourceChangelog("v1.3.8", "v1.3.7"),
+            "failed update would have displayed a mismatched changelog");
+
+        var manifestRoot = Path.Combine(tempDirectory, "install");
+        Directory.CreateDirectory(manifestRoot);
+        await File.WriteAllTextAsync(Path.Combine(manifestRoot, "update-manifest.json"), "{\"version\":\"1.3.8\"}");
+        Assert(VersionChecker.HasInstalledUpdateManifestVersion(manifestRoot, "v1.3.8"),
+            "matching update manifest did not prove the portable update completed");
+        Assert(!VersionChecker.HasInstalledUpdateManifestVersion(manifestRoot, "v1.3.7"),
+            "mismatched update manifest was accepted");
+    }
+    finally
+    {
+        if (Directory.Exists(tempDirectory))
+            Directory.Delete(tempDirectory, true);
+    }
+}
+
+static HttpResponseMessage GitHubResponse(HttpRequestMessage request, HttpStatusCode status, string body,
+    Uri? effectiveUri = null, int? remaining = null, string? reasonPhrase = null)
+{
+    var response = new HttpResponseMessage(status)
+    {
+        RequestMessage = new HttpRequestMessage(request.Method, effectiveUri ?? request.RequestUri),
+        Content = new StringContent(body, Encoding.UTF8, "text/html"),
+    };
+    response.ReasonPhrase = reasonPhrase;
+    if (remaining.HasValue)
+        response.Headers.TryAddWithoutValidation("X-RateLimit-Remaining", remaining.Value.ToString());
+    return response;
+}
+
+static async Task GitHubRateLimitFallsBackToStableWebReleaseAsync()
+{
+    var handler = new GitHubRouteHandler(request =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (path.EndsWith("/releases", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.Forbidden, "", reasonPhrase: "rate limit exceeded");
+        if (path.EndsWith("/releases/latest", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK, "", new Uri("https://github.com/owner/repo/releases/tag/v1.3.7"));
+        if (path.EndsWith("/releases/expanded_assets/v1.3.7", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK,
+                "<a href=\"/other/repo/releases/download/v1.3.7/foreign-win-x64-update.zip\">foreign</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.6/stale-win-x64-update.zip\">stale</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64-update.zip\">archive</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64-update.zip.sha256\">update sha</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64.zip\">full</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64.zip.sha256\">full sha</a>");
+        if (path.EndsWith(".sha256", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK, new string('a', 64));
+        throw new InvalidOperationException($"unexpected GitHub fallback request: {request.RequestUri}");
+    });
+    using var client = new HttpClient(handler);
+    var result = await VersionChecker.GetLatestVersionAndDownloadUrlFromGithubAsync(
+        "owner", "repo", true, currentVersion: "v1.3.6", httpClient: client,
+        versionTypeOverride: VersionChecker.VersionType.Stable, webFallbackHttpClient: client);
+
+    Assert(result.latestVersion == "v1.3.7", $"unexpected fallback version: {result.latestVersion}");
+    Assert(result.url.EndsWith("MaaBanGDream-v1.3.7-win-x64.zip", StringComparison.Ordinal),
+        $"unexpected fallback archive: {result.url}");
+    Assert(result.sha256 == new string('a', 64), "fallback did not use the exact archive sidecar");
+    Assert(handler.Requests.Any(uri => uri.AbsolutePath.EndsWith("/releases/latest", StringComparison.Ordinal)),
+        "rate-limited GitHub API did not use the stable web-release fallback");
+}
+
+static async Task GitHubTagRateLimitFallsBackToExpandedAssetsAsync()
+{
+    var handler = new GitHubRouteHandler(request =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (path.EndsWith("/releases", StringComparison.Ordinal))
+        {
+            if (request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal))
+                return GitHubResponse(request, HttpStatusCode.OK, "[]");
+            return GitHubResponse(request, HttpStatusCode.OK,
+                "[{\"tag_name\":\"v1.3.7\",\"prerelease\":false,\"body\":\"\"}]");
+        }
+        if (path.EndsWith("/releases/tags/v1.3.7", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.Forbidden, "API rate limit exceeded", remaining: 0);
+        if (path.EndsWith("/releases/expanded_assets/v1.3.7", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK,
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64-update.zip\">archive</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64-update.zip.sha256\">update sha</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64.zip\">full</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64.zip.sha256\">full sha</a>");
+        if (path.EndsWith(".sha256", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK, new string('b', 64));
+        throw new InvalidOperationException($"unexpected GitHub tag fallback request: {request.RequestUri}");
+    });
+    using var client = new HttpClient(handler);
+    var result = await VersionChecker.GetLatestVersionAndDownloadUrlFromGithubAsync(
+        "owner", "repo", false, currentVersion: "v1.3.6", httpClient: client,
+        versionTypeOverride: VersionChecker.VersionType.Stable, webFallbackHttpClient: client);
+
+    Assert(result.latestVersion == "v1.3.7", "tag fallback changed the selected version");
+    Assert(result.sha256 == new string('b', 64), "tag fallback did not validate the exact sidecar");
+    Assert(handler.Requests.Any(uri => uri.AbsolutePath.EndsWith("/releases/expanded_assets/v1.3.7", StringComparison.Ordinal)),
+        "rate-limited tag API did not use the expanded-assets fallback");
+}
+
+static async Task GitHubOrdinaryForbiddenDoesNotFallBackAsync()
+{
+    var handler = new GitHubRouteHandler(request =>
+        GitHubResponse(request, HttpStatusCode.Forbidden, "bad credentials"));
+    using var client = new HttpClient(handler);
+    try
+    {
+        await VersionChecker.GetLatestVersionAndDownloadUrlFromGithubAsync(
+            "owner", "repo", true, httpClient: client,
+            versionTypeOverride: VersionChecker.VersionType.Stable, webFallbackHttpClient: client);
+        throw new InvalidOperationException("ordinary forbidden response was accepted");
+    }
+    catch (Exception ex) when (ex.Message.Contains("403", StringComparison.Ordinal))
+    {
+    }
+    Assert(handler.Requests.All(uri => !uri.AbsolutePath.EndsWith("/releases/latest", StringComparison.Ordinal)),
+        "ordinary forbidden response must not use the public web fallback");
+}
+
+static async Task GitHubNonStableChannelsDoNotFallBackAsync()
+{
+    foreach (var channel in new[] { VersionChecker.VersionType.Beta, VersionChecker.VersionType.Alpha })
+    {
+        var handler = new GitHubRouteHandler(request =>
+            GitHubResponse(request, HttpStatusCode.Forbidden, "rate limit exceeded", remaining: 0));
+        using var client = new HttpClient(handler);
+        try
+        {
+            await VersionChecker.GetLatestVersionAndDownloadUrlFromGithubAsync(
+                "owner", "repo", true, httpClient: client, versionTypeOverride: channel,
+                webFallbackHttpClient: client);
+            throw new InvalidOperationException($"{channel} channel unexpectedly used a stable fallback");
+        }
+        catch (Exception ex) when (ex.Message.Contains("403", StringComparison.Ordinal))
+        {
+        }
+        Assert(handler.Requests.All(uri => !uri.AbsolutePath.EndsWith("/releases/latest", StringComparison.Ordinal)),
+            $"{channel} channel must not use the stable web fallback");
+    }
+}
+
+static async Task GitHubWebFallbackRequiresExactShaSidecarAsync()
+{
+    var handler = new GitHubRouteHandler(request =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (path.EndsWith("/releases", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.TooManyRequests, "rate limit exceeded");
+        if (path.EndsWith("/releases/latest", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK, "", new Uri("https://github.com/owner/repo/releases/tag/v1.3.7"));
+        if (path.EndsWith("/releases/expanded_assets/v1.3.7", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK,
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64.zip\">archive</a>" +
+                "<a href=\"/owner/repo/releases/download/v1.3.7/MaaBanGDream-v1.3.7-win-x64.zip.sha256\">invalid sidecar</a>");
+        if (path.EndsWith(".sha256", StringComparison.Ordinal))
+            return GitHubResponse(request, HttpStatusCode.OK, "not a sha256 checksum");
+        throw new InvalidOperationException($"unexpected sidecar request: {request.RequestUri}");
+    });
+    using var client = new HttpClient(handler);
+    try
+    {
+        await VersionChecker.GetLatestVersionAndDownloadUrlFromGithubAsync(
+            "owner", "repo", true, httpClient: client,
+            versionTypeOverride: VersionChecker.VersionType.Stable, webFallbackHttpClient: client);
+        throw new InvalidOperationException("429 fallback accepted a non-matching sidecar");
+    }
+    catch (Exception ex) when (ex.Message.Contains("SHA256", StringComparison.Ordinal))
+    {
+    }
+}
+
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
 await ReportsTerminalFailureAfterRetryAsync();
 await CancelPreventsPendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
+ProfileCurrentSelectionMarkerIsIndependentFromGridSelection();
+ProfileSelectionRequestUsesTaskDifficulty();
 CalibrationRecordsReadNestedSessionResults();
 ChartCatalogSummaryIsReadable();
 ApplicationBrandingUsesProjectName();
+await AboutMetadataMergeAndLateLoadAsync();
 NativeGitHubUpdaterSelectsPortablePackageSafely();
 NativeGitHubUpdaterRejectsAmbiguousArchives();
 GitHubOnlyResourcesCoerceLegacyMirrorSelection();
 await NativeDownloaderResumesAndRestartsSafelyAsync();
 await NativeDownloaderRejectsShaMismatchAsync();
-Console.WriteLine("MFA auto-save tests passed: 16 (including native GitHub updater download semantics)");
+await GitHubRateLimitFallsBackToStableWebReleaseAsync();
+await GitHubTagRateLimitFallsBackToExpandedAssetsAsync();
+await GitHubOrdinaryForbiddenDoesNotFallBackAsync();
+await GitHubNonStableChannelsDoNotFallBackAsync();
+await GitHubWebFallbackRequiresExactShaSidecarAsync();
+await GitHubReleaseNotesUseExactTagAndWebFallbackAsync();
+await GitHubLatestReleaseNotesIncludeLatestTagAsync();
+Console.WriteLine("MFA auto-save tests passed (including About metadata and native GitHub updater coverage)");
+
+sealed class GitHubRouteHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+{
+    public List<Uri> Requests { get; } = [];
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Requests.Add(request.RequestUri ?? new Uri("https://invalid.local/"));
+        return Task.FromResult(responder(request));
+    }
+}
