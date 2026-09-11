@@ -1,5 +1,6 @@
 ﻿using Avalonia.Collections;
 using Avalonia.Styling;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using MFAAvalonia.Configuration;
@@ -8,10 +9,12 @@ using MFAAvalonia.Extensions.MaaFW;
 using MFAAvalonia.Helper;
 using MFAAvalonia.Helper.ValueType;
 using MFAAvalonia.ViewModels.Other;
+using System;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.IO;
 using System.Windows.Input;
 
 namespace MFAAvalonia.ViewModels.Pages;
@@ -65,6 +68,8 @@ public partial class SettingsViewModel : ViewModelBase
         tabVm.Tabs.CollectionChanged += OnConfigurationListCollectionChanged;
 
         ApplyInterfaceMetadata(MaaProcessor.Interface);
+        // SettingsViewModel 可能晚于 interface 创建；主动补读外部说明文件。
+        _ = MaaProcessor.RefreshSettingsMetadataAsync(this);
         RefreshCurrentConfiguration();
         RefreshFilteredConfigurationList();
     }
@@ -79,6 +84,13 @@ public partial class SettingsViewModel : ViewModelBase
             ResourceDescription = string.Empty;
             ResourceContact = string.Empty;
             ResourceLicense = string.Empty;
+            ResourceProjectName = string.Empty;
+            ResourceProjectIdentifier = string.Empty;
+            ResourceProjectVersion = string.Empty;
+            HasResourceProjectIdentifier = false;
+            HasResourceProjectVersion = false;
+            ClearResourceIcon();
+            HasResourceProjectInfo = false;
             HasResourceDescription = false;
             HasResourceContact = false;
             HasResourceLicense = false;
@@ -90,6 +102,66 @@ public partial class SettingsViewModel : ViewModelBase
         ResourceIssues = string.IsNullOrWhiteSpace(ResourceGithub)
             ? string.Empty
             : $"{ResourceGithub}/issues";
+        var resourceName = LanguageHelper.GetLocalizedString(maaInterface.Name ?? maaInterface.Label ?? string.Empty);
+        var resourceIdentifier = LanguageHelper.GetLocalizedString(maaInterface.Label ?? string.Empty);
+        ResourceProjectName = resourceName;
+        ResourceProjectIdentifier = resourceIdentifier.Equals(resourceName, StringComparison.Ordinal) ? string.Empty : resourceIdentifier;
+        ResourceProjectVersion = LanguageHelper.GetLocalizedString(maaInterface.Version ?? string.Empty);
+        HasResourceProjectIdentifier = !string.IsNullOrWhiteSpace(ResourceProjectIdentifier);
+        HasResourceProjectVersion = !string.IsNullOrWhiteSpace(ResourceProjectVersion);
+        // 先清空上一份资源的异步内容，避免加载期间把旧项目说明误显示为当前项目说明。
+        ApplyResolvedInterfaceContent(string.Empty, string.Empty, string.Empty);
+        LoadResourceIcon(maaInterface.AboutIcon ?? maaInterface.Icon);
+        HasResourceProjectInfo = !string.IsNullOrWhiteSpace(ResourceProjectName)
+                                 || !string.IsNullOrWhiteSpace(ResourceProjectIdentifier)
+                                 || !string.IsNullOrWhiteSpace(ResourceProjectVersion)
+                                 || HasResourceIcon;
+    }
+
+    public void ApplyResolvedInterfaceContent(string description, string contact, string license)
+    {
+        ResourceDescription = description;
+        ResourceContact = contact;
+        ResourceLicense = license;
+        HasResourceDescription = !string.IsNullOrWhiteSpace(description);
+        HasResourceContact = !string.IsNullOrWhiteSpace(contact);
+        HasResourceLicense = !string.IsNullOrWhiteSpace(license);
+    }
+
+    private void LoadResourceIcon(string? icon)
+    {
+        Bitmap? bitmap = null;
+        try
+        {
+            var source = LanguageHelper.GetLocalizedString(icon ?? string.Empty);
+            if (!string.IsNullOrWhiteSpace(source)
+                && (!Uri.TryCreate(source, UriKind.Absolute, out var uri)
+                    || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
+            {
+                var path = source.Contains("{PROJECT_DIR}", StringComparison.Ordinal)
+                    ? MaaInterface.ReplacePlaceholder(source, AppPaths.DataRoot)
+                    : Path.IsPathRooted(source) ? source : Path.Combine(AppPaths.DataRoot, source);
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                    bitmap = new Bitmap(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"加载项目图标失败：原因={ex.Message}");
+        }
+
+        var previous = ResourceIcon;
+        ResourceIcon = bitmap;
+        HasResourceIcon = bitmap is not null;
+        previous?.Dispose();
+    }
+
+    private void ClearResourceIcon()
+    {
+        var previous = ResourceIcon;
+        ResourceIcon = null;
+        HasResourceIcon = false;
+        previous?.Dispose();
     }
 
     partial void OnCurrentConfigurationChanged(InstanceTabViewModel? value)
@@ -254,6 +326,14 @@ public partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _resourceContact = string.Empty;
     [ObservableProperty] private string _resourceDescription = string.Empty;
     [ObservableProperty] private string _resourceLicense = string.Empty;
+    [ObservableProperty] private string _resourceProjectName = string.Empty;
+    [ObservableProperty] private string _resourceProjectIdentifier = string.Empty;
+    [ObservableProperty] private string _resourceProjectVersion = string.Empty;
+    [ObservableProperty] private Bitmap? _resourceIcon;
+    [ObservableProperty] private bool _hasResourceIcon;
+    [ObservableProperty] private bool _hasResourceProjectInfo;
+    [ObservableProperty] private bool _hasResourceProjectIdentifier;
+    [ObservableProperty] private bool _hasResourceProjectVersion;
     [ObservableProperty] private bool _hasResourceContact;
     [ObservableProperty] private bool _hasResourceDescription;
     [ObservableProperty] private bool _hasResourceLicense;

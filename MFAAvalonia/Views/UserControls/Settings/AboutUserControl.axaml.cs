@@ -35,9 +35,18 @@ public partial class AboutUserControl : UserControl
         await FileLogExporter.CompressRecentLogs(storageProvider);
     }
     
-    private void DisplayAnnouncement(object? sender, RoutedEventArgs e)
+    private async void DisplayAnnouncement(object? sender, RoutedEventArgs e)
     {
-       AnnouncementViewModel.CheckAnnouncement(true);
+        try
+        {
+            var releaseNote = await VersionChecker.GetLatestResourceReleaseNotesAsync();
+            ChangelogViewModel.ShowReleaseContent($"# 最新版本 {releaseNote.Version}\n\n{releaseNote.Content}");
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"获取当前资源发布说明失败：原因={ex.Message}");
+            ChangelogViewModel.ShowReleaseContent($"# 无法获取发布说明\n\n当前资源版本的发布说明暂不可用。\n\n原因：{ex.Message}");
+        }
     }
     
     private void ClearCache_Click(object? sender, RoutedEventArgs e)

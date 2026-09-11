@@ -11,6 +11,8 @@ public static class ConfigurationKeys
     public const string LinkStart = "LinkStart";
     public const string DoNotShowAnnouncementAgain = "AnnouncementInfo.DoNotShowAgain";
     public const string DoNotShowChangelogAgain = "Changelog.DoNotShowAgain";
+    public const string PendingResourceChangelogVersion = "Changelog.PendingResourceVersion";
+    public const string PendingResourceChangelogRequiresManifest = "Changelog.PendingResourceRequiresManifest";
     public const string ForceScheduledStart = "ForceScheduledStart";
     public const string CustomConfig = "CustomConfig";
     public const string NoAutoStart = "NoAutoStart";

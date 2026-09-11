@@ -25,11 +25,7 @@ public partial class ChangelogViewModel : ViewModelBase
 
     public static bool CheckReleaseNote()
     {
-        var result = false;
-        var viewModel = new ChangelogViewModel
-        {
-            Type = AnnouncementType.Release,
-        };
+        var content = string.Empty;
         try
         {
             var resourcePath = AppPaths.ResourceDirectory;
@@ -38,40 +34,40 @@ public partial class ChangelogViewModel : ViewModelBase
             
             if (File.Exists(mdPath))
             {
-                var content = File.ReadAllText(mdPath);
-                viewModel.AnnouncementInfo = content;
+                content = File.ReadAllText(mdPath);
             }
         }
         catch (Exception ex)
         {
             LoggerHelper.Error($"读取Release Note文件失败: {ex.Message}");
-            viewModel.AnnouncementInfo = "";
+            content = string.Empty;
         }
-        finally
+        return ShowReleaseContent(content);
+    }
+
+    /// <summary>
+    /// 统一复用发布说明窗口，供更新检查与 About 手动查看使用。
+    /// </summary>
+    public static bool ShowReleaseContent(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content) || content.Trim().Equals("placeholder", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var announcementView = new ChangelogView
         {
-
-            if (!string.IsNullOrWhiteSpace(viewModel.AnnouncementInfo) && !viewModel.AnnouncementInfo.Trim().Equals("placeholder", StringComparison.OrdinalIgnoreCase))
+            DataContext = new ChangelogViewModel
             {
-                var announcementView = new ChangelogView
-                {
-                    DataContext = viewModel
-                };
-                announcementView.Show();
-                result = true;
+                Type = AnnouncementType.Release,
+                AnnouncementInfo = content,
             }
-
-        }
-        return result;
+        };
+        announcementView.Show();
+        return true;
     }
 
     public static bool CheckChangelog()
     {
-        var result = false;
-        var viewModel = new ChangelogViewModel
-        {
-            Type = AnnouncementType.Changelog,
-        };
-        if (viewModel.DoNotRemindThisChangelogAgain) return false;
+        var content = string.Empty;
         try
         {
             var resourcePath = AppPaths.ResourceDirectory;
@@ -79,27 +75,33 @@ public partial class ChangelogViewModel : ViewModelBase
 
             if (File.Exists(mdPath))
             {
-                var content = File.ReadAllText(mdPath);
-                viewModel.AnnouncementInfo = content;
+                content = File.ReadAllText(mdPath);
             }
         }
         catch (Exception ex)
         {
             LoggerHelper.Error($"读取公告文件失败: {ex.Message}");
-            viewModel.AnnouncementInfo = "";
+            content = string.Empty;
         }
-        finally
+        return ShowChangelogContent(content);
+    }
+
+    /// <summary>
+    /// 复用更新完成公告窗口，并保留用户“不再提醒”的选择。
+    /// </summary>
+    public static bool ShowChangelogContent(string? content)
+    {
+        var viewModel = new ChangelogViewModel
         {
-            if (!string.IsNullOrWhiteSpace(viewModel.AnnouncementInfo) && !viewModel.AnnouncementInfo.Trim().Equals("placeholder", StringComparison.OrdinalIgnoreCase))
-            {
-                var announcementView = new ChangelogView
-                {
-                    DataContext = viewModel
-                };
-                announcementView.Show();
-                result = true;
-            }
-        }
-        return result;
+            Type = AnnouncementType.Changelog,
+        };
+        if (viewModel.DoNotRemindThisChangelogAgain
+            || string.IsNullOrWhiteSpace(content)
+            || content.Trim().Equals("placeholder", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        viewModel.AnnouncementInfo = content;
+        new ChangelogView { DataContext = viewModel }.Show();
+        return true;
     }
 }
