@@ -374,6 +374,7 @@ public partial class RootView : SukiWindow
                     });
 
                     await Task.Delay(300);
+                    VersionChecker.Check();
                     VersionChecker.ShowPendingResourceChangelogAfterSuccessfulUpdate();
                     await AnnouncementViewModel.CheckAnnouncement();
                 }, name: "公告和最新版本检测");
