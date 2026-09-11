@@ -12,6 +12,11 @@
         <CETCompat>false</CETCompat>
     </PropertyGroup>
 
+    <PropertyGroup Condition="'$(MaaBanGDreamPackageBuild)' == 'true'">
+        <AssemblyName>MaaBanGDream</AssemblyName>
+        <OutputName>MaaBanGDream</OutputName>
+    </PropertyGroup>
+
     <PropertyGroup>
         <DebianPackageDependencies>dotnet-runtime-8.0;libc6;libgtk-3-0</DebianPackageDependencies>
         <RuntimeIdentifiers Condition="'$(RuntimeIdentifier)' == ''">win-x64;linux-x64;osx-x64;win-arm64;linux-arm64;osx-arm64</RuntimeIdentifiers>
