@@ -588,6 +588,30 @@ static async Task GitHubLatestReleaseNotesIncludeLatestTagAsync()
     }
 }
 
+static void PackagedReleaseNotesAreReadLocally()
+{
+    var tempDirectory = Path.Combine(Path.GetTempPath(), $"mfa-packaged-release-{Guid.NewGuid():N}");
+    try
+    {
+        var resourceDirectory = Path.Combine(tempDirectory, "resource");
+        Directory.CreateDirectory(resourceDirectory);
+        File.WriteAllText(Path.Combine(resourceDirectory, "Release.md"), "# v1.3.7\n\n本地发布说明");
+
+        Assert(VersionChecker.TryReadPackagedReleaseNotes(tempDirectory, out var content)
+               && content.Contains("本地发布说明", StringComparison.Ordinal),
+            "validated update package release notes were not read locally");
+
+        File.WriteAllText(Path.Combine(resourceDirectory, "Release.md"), "placeholder");
+        Assert(!VersionChecker.TryReadPackagedReleaseNotes(tempDirectory, out _),
+            "placeholder package release notes were accepted");
+    }
+    finally
+    {
+        if (Directory.Exists(tempDirectory))
+            Directory.Delete(tempDirectory, true);
+    }
+}
+
 static HttpResponseMessage GitHubResponse(HttpRequestMessage request, HttpStatusCode status, string body,
     Uri? effectiveUri = null, int? remaining = null, string? reasonPhrase = null)
 {
@@ -766,6 +790,7 @@ await GitHubNonStableChannelsDoNotFallBackAsync();
 await GitHubWebFallbackRequiresExactShaSidecarAsync();
 await GitHubReleaseNotesUseExactTagAndWebFallbackAsync();
 await GitHubLatestReleaseNotesIncludeLatestTagAsync();
+PackagedReleaseNotesAreReadLocally();
 Console.WriteLine("MFA auto-save tests passed (including About metadata and native GitHub updater coverage)");
 
 sealed class GitHubRouteHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
