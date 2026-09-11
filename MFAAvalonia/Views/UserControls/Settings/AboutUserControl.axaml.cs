@@ -35,17 +35,12 @@ public partial class AboutUserControl : UserControl
         await FileLogExporter.CompressRecentLogs(storageProvider);
     }
     
-    private async void DisplayAnnouncement(object? sender, RoutedEventArgs e)
+    private void DisplayAnnouncement(object? sender, RoutedEventArgs e)
     {
-        try
+        if (!ChangelogViewModel.CheckReleaseNote())
         {
-            var releaseNote = await VersionChecker.GetLatestResourceReleaseNotesAsync();
-            ChangelogViewModel.ShowReleaseContent($"# 最新版本 {releaseNote.Version}\n\n{releaseNote.Content}");
-        }
-        catch (Exception ex)
-        {
-            LoggerHelper.Warning($"获取当前资源发布说明失败：原因={ex.Message}");
-            ChangelogViewModel.ShowReleaseContent($"# 无法获取发布说明\n\n当前资源版本的发布说明暂不可用。\n\n原因：{ex.Message}");
+            LoggerHelper.Warning("当前安装版本没有可用的本地发布说明。");
+            ChangelogViewModel.ShowReleaseContent("# 暂无本地发布说明\n\n当前安装版本没有携带发布说明文件。");
         }
     }
     

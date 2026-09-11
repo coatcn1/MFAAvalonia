@@ -416,7 +416,6 @@ public static class VersionChecker
                                     ToastHelper.Warn(LangKeys.Warning.ToLocalization(), LangKeys.CurrentOtherUpdatingTask.ToLocalization());
                             }, true).Queue();
                     });
-                DispatcherHelper.RunOnMainThread(ChangelogViewModel.CheckReleaseNote);
             }
             else
             {
@@ -844,8 +843,8 @@ public static class VersionChecker
         }
 
         if (isGithub && !isLocalPackage && IsNewVersionAvailable(releaseTag, localVersion))
-            await PrepareResourceChangelogAfterValidatedUpdateAsync(
-                strings[0], strings[1], releaseTag, containsCoreApplicationFiles);
+            PrepareResourceChangelogAfterValidatedUpdate(
+                originPath, releaseTag, containsCoreApplicationFiles);
 
         if (containsCoreApplicationFiles)
         {
@@ -2222,11 +2221,6 @@ public static class VersionChecker
                         if (!string.IsNullOrEmpty(targetVersion) && tagVersion.Trim().Equals(targetVersion.Trim(), StringComparison.OrdinalIgnoreCase))
                         {
                             latestVersion = tagVersion;
-                            if (IsNewVersionAvailable(latestVersion, currentVersion))
-                            {
-                                if (repo != "MFAAvalonia")
-                                    SaveRelease(tag, "body");
-                            }
                             (url, sha256) = await GetDownloadUrlFromGitHubReleaseAsync(
                                 latestVersion, owner, repo, httpClient, webFallbackHttpClient,
                                 versionType == VersionType.Stable).ConfigureAwait(false);
@@ -2251,23 +2245,6 @@ public static class VersionChecker
                     LoggerHelper.Warning("GitHub API 已限流，改用稳定版 Release 页面查询最新版本和资产。");
                     var fallback = await GetLatestStableReleaseFromWebAsync(webFallbackHttpClient, owner, repo).ConfigureAwait(false);
                     (url, sha256) = await SelectGitHubReleaseDownloadAsync(fallback.assets, webFallbackHttpClient, true).ConfigureAwait(false);
-                    try
-                    {
-                        var body = await GetGitHubReleaseBodyFromWebAsync(webFallbackHttpClient, owner, repo, fallback.version).ConfigureAwait(false);
-                        SaveRelease(new JObject
-                        {
-                            ["tag_name"] = fallback.version,
-                            ["body"] = body,
-                        }, "body");
-                    }
-                    catch (Exception ex)
-                    {
-                        SaveRelease(new JObject
-                        {
-                            ["tag_name"] = fallback.version,
-                            ["body"] = $"GitHub API 已限流，且无法读取 {fallback.version} 的网页发布说明。原因：{ex.Message}",
-                        }, "body");
-                    }
                     return (url, fallback.version, sha256);
                 }
                 else
@@ -2288,11 +2265,6 @@ public static class VersionChecker
         if (!string.IsNullOrEmpty(bestVersion) && bestRelease != null)
         {
             latestVersion = bestVersion;
-            if (IsNewVersionAvailable(latestVersion, currentVersion))
-            {
-                if (repo != "MFAAvalonia")
-                    SaveRelease(bestRelease, "body");
-            }
             (url, sha256) = await GetDownloadUrlFromGitHubReleaseAsync(
                 latestVersion, owner, repo, httpClient, webFallbackHttpClient,
                 versionType == VersionType.Stable).ConfigureAwait(false);
@@ -3911,27 +3883,25 @@ public static class VersionChecker
     }
 
     /// <summary>
-    /// 仅在更新包已完成下载、校验和结构验证后保存待展示说明。
+    /// 仅在更新包已完成下载、校验和结构验证后，从包内保存待展示说明。
     /// 启动时还会再次核对已安装版本，覆盖失败不会误弹新版本公告。
     /// </summary>
-    private static async Task PrepareResourceChangelogAfterValidatedUpdateAsync(
-        string owner,
-        string repo,
+    private static void PrepareResourceChangelogAfterValidatedUpdate(
+        string packageRoot,
         string version,
         bool requiresInstallManifest)
     {
         try
         {
-            var release = await GetGitHubReleaseNotesAsync(owner, repo, version).ConfigureAwait(false);
-            if (!release.Version.Equals(version, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException($"待更新发布说明版本不匹配：期望={version}，实际={release.Version}。");
+            if (!TryReadPackagedReleaseNotes(packageRoot, out var content))
+                throw new InvalidDataException($"更新包缺少有效的 resource/{ChangelogViewModel.ReleaseFileName}。");
 
             SaveChangelog(new JObject
             {
-                ["tag_name"] = release.Version,
-                ["body"] = release.Content,
+                ["tag_name"] = version,
+                ["body"] = content,
             }, "body");
-            GlobalConfiguration.SetValue(ConfigurationKeys.PendingResourceChangelogVersion, release.Version);
+            GlobalConfiguration.SetValue(ConfigurationKeys.PendingResourceChangelogVersion, version);
             GlobalConfiguration.SetValue(
                 ConfigurationKeys.PendingResourceChangelogRequiresManifest,
                 requiresInstallManifest.ToString());
@@ -3939,6 +3909,26 @@ public static class VersionChecker
         catch (Exception ex)
         {
             LoggerHelper.Warning($"更新包已验证，但未能准备发布说明：版本={version}，原因={ex.Message}");
+        }
+    }
+
+    internal static bool TryReadPackagedReleaseNotes(string packageRoot, out string content)
+    {
+        content = string.Empty;
+        try
+        {
+            var path = Path.Combine(packageRoot, "resource", ChangelogViewModel.ReleaseFileName);
+            if (!File.Exists(path))
+                return false;
+            content = File.ReadAllText(path);
+            return !string.IsNullOrWhiteSpace(content)
+                   && !content.Trim().Equals("placeholder", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"读取更新包内发布说明失败：目录={packageRoot}，原因={ex.Message}");
+            content = string.Empty;
+            return false;
         }
     }
 
