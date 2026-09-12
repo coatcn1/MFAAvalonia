@@ -44,10 +44,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private int _frameTimeoutMs = 150;
     [ObservableProperty] private int _playfieldTimeoutMs = 1500;
     [ObservableProperty] private bool _skipProcessConflictCleanup;
-    [ObservableProperty] private bool _gameEffectSettingsEnabled = true;
-    [ObservableProperty] private int _noteSkinType = 1;
-    [ObservableProperty] private bool _judgementAssistEffect = true;
-    [ObservableProperty] private int _tapEffect = 1;
+    [ObservableProperty] private bool _noteSpeedSettingsEnabled = true;
     [ObservableProperty] private bool _chartPredictionEnabled = true;
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
@@ -93,10 +90,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnFrameTimeoutMsChanged(int value) => ScheduleProfileAutoSave();
     partial void OnPlayfieldTimeoutMsChanged(int value) => ScheduleProfileAutoSave();
     partial void OnSkipProcessConflictCleanupChanged(bool value) => ScheduleRuntimeAutoSave();
-    partial void OnGameEffectSettingsEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
-    partial void OnNoteSkinTypeChanged(int value) => ScheduleRuntimeAutoSave();
-    partial void OnJudgementAssistEffectChanged(bool value) => ScheduleRuntimeAutoSave();
-    partial void OnTapEffectChanged(int value) => ScheduleRuntimeAutoSave();
+    partial void OnNoteSpeedSettingsEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictionEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
@@ -134,14 +128,10 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                 var runtime = (JObject?)result["runtime_options"];
                 SkipProcessConflictCleanup =
                     runtime?.Value<bool?>("skip_process_conflict_cleanup") ?? false;
-                GameEffectSettingsEnabled =
-                    runtime?.Value<bool?>("game_effect_settings_enabled") ?? true;
-                NoteSkinType = Math.Clamp(
-                    runtime?.Value<int?>("note_skin_type") ?? 1, 1, 7);
-                JudgementAssistEffect =
-                    runtime?.Value<bool?>("judgement_assist_effect") ?? true;
-                TapEffect = Math.Clamp(
-                    runtime?.Value<int?>("tap_effect") ?? 1, 1, 5);
+                NoteSpeedSettingsEnabled =
+                    runtime?.Value<bool?>("note_speed_settings_enabled")
+                    ?? runtime?.Value<bool?>("game_effect_settings_enabled")
+                    ?? true;
                 ChartPredictionEnabled =
                     runtime?.Value<bool?>("chart_prediction_enabled") ?? true;
                 ChartPredictPresses =
@@ -194,10 +184,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     private JObject CaptureRuntimeOptions() => new()
     {
         ["skip_process_conflict_cleanup"] = SkipProcessConflictCleanup,
-        ["game_effect_settings_enabled"] = GameEffectSettingsEnabled,
-        ["note_skin_type"] = NoteSkinType,
-        ["judgement_assist_effect"] = JudgementAssistEffect,
-        ["tap_effect"] = TapEffect,
+        ["note_speed_settings_enabled"] = NoteSpeedSettingsEnabled,
         ["chart_prediction_enabled"] = ChartPredictionEnabled,
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
@@ -569,17 +556,6 @@ public sealed class PerformanceProfileItem
     public string NoteSpeedText =>
         ((JObject?)_value["environment"])?.Value<decimal?>("note_speed")?.ToString("F2")
         ?? "—";
-    public string EffectText
-    {
-        get
-        {
-            var env = (JObject?)_value["environment"];
-            if (env == null) return "—";
-            var tap = env["tap_effect"]?.ToString() ?? "—";
-            var skin = env["note_skin_type"]?.ToString() ?? "—";
-            return $"NOTE {skin} · TAP {tap}";
-        }
-    }
     public string EngineText
     {
         get

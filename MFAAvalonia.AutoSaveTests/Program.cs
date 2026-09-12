@@ -159,14 +159,14 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
         && options.Value<bool>("native_realtime_enabled") == false,
         "native realtime option must be captured and default to false");
     Assert(
-        options.Value<int>("note_skin_type") == 1,
-        "note skin type must default to TYPE1");
+        options.Value<bool>("note_speed_settings_enabled"),
+        "note speed settings must default to enabled");
     Assert(
-        options.Value<int>("tap_effect") == 1,
-        "tap effect must default to 1");
-    Assert(
-        options.Value<bool>("judgement_assist_effect"),
-        "judgement assist must default to enabled");
+        options["game_effect_settings_enabled"] == null
+        && options["note_skin_type"] == null
+        && options["tap_effect"] == null
+        && options["judgement_assist_effect"] == null,
+        "removed game effect options must not be persisted");
     Assert(
         options["life_safety_enabled"] == null
         && options["life_exit_threshold"] == null
