@@ -155,6 +155,22 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
         options!.Value<bool>("skip_process_conflict_cleanup") == false,
         "process cleanup switch must default to false");
     Assert(
+        options.Value<bool>("skip_result_check") == false,
+        "result check switch must default to false");
+    var resultSwitch = typeof(PerformanceProfileSettingsUserControlModel).GetProperty(
+        "SkipResultCheck");
+    Assert(resultSwitch != null, "result check switch property missing");
+    resultSwitch!.SetValue(model, true);
+    var enabledOptions = (JObject?)capture.Invoke(model, null);
+    Assert(
+        enabledOptions?.Value<bool>("skip_result_check") == true,
+        "result check switch was not captured after it changed");
+    Assert(model.PlayFailureRetryCount == 1, "retry count default must remain one");
+    model.PlayFailureRetryCount = 99;
+    var retryOptions = (JObject?)capture.Invoke(model, null);
+    Assert(retryOptions?.Value<int>("play_failure_retry_count") == 99,
+        "maximum retry count was not captured");
+    Assert(
         options["native_realtime_enabled"]?.Type == JTokenType.Boolean
         && options.Value<bool>("native_realtime_enabled") == false,
         "native realtime option must be captured and default to false");
