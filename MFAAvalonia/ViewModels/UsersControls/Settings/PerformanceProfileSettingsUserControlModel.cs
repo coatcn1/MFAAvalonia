@@ -44,6 +44,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private int _frameTimeoutMs = 150;
     [ObservableProperty] private int _playfieldTimeoutMs = 1500;
     [ObservableProperty] private bool _skipProcessConflictCleanup;
+    [ObservableProperty] private bool _skipResultCheck;
     [ObservableProperty] private bool _noteSpeedSettingsEnabled = true;
     [ObservableProperty] private bool _chartPredictionEnabled = true;
     [ObservableProperty] private bool _chartPredictPresses = true;
@@ -90,6 +91,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnFrameTimeoutMsChanged(int value) => ScheduleProfileAutoSave();
     partial void OnPlayfieldTimeoutMsChanged(int value) => ScheduleProfileAutoSave();
     partial void OnSkipProcessConflictCleanupChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnSkipResultCheckChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNoteSpeedSettingsEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictionEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
@@ -128,6 +130,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                 var runtime = (JObject?)result["runtime_options"];
                 SkipProcessConflictCleanup =
                     runtime?.Value<bool?>("skip_process_conflict_cleanup") ?? false;
+                SkipResultCheck =
+                    runtime?.Value<bool?>("skip_result_check") ?? false;
                 NoteSpeedSettingsEnabled =
                     runtime?.Value<bool?>("note_speed_settings_enabled")
                     ?? runtime?.Value<bool?>("game_effect_settings_enabled")
@@ -141,7 +145,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                 CooperativeJitterEnabled =
                     runtime?.Value<bool?>("cooperative_jitter_enabled") ?? true;
                 PlayFailureRetryCount = Math.Clamp(
-                    runtime?.Value<int?>("play_failure_retry_count") ?? 1, 0, 3);
+                    runtime?.Value<int?>("play_failure_retry_count") ?? 1, 0, 99);
                 var speeds = (JObject?)runtime?["calibration_note_speeds"];
                 EasyCalibrationSpeed = speeds?.Value<decimal?>("Easy") ?? 2.00m;
                 NormalCalibrationSpeed = speeds?.Value<decimal?>("Normal") ?? 2.00m;
@@ -184,6 +188,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     private JObject CaptureRuntimeOptions() => new()
     {
         ["skip_process_conflict_cleanup"] = SkipProcessConflictCleanup,
+        ["skip_result_check"] = SkipResultCheck,
         ["note_speed_settings_enabled"] = NoteSpeedSettingsEnabled,
         ["chart_prediction_enabled"] = ChartPredictionEnabled,
         ["chart_predict_presses"] = ChartPredictPresses,

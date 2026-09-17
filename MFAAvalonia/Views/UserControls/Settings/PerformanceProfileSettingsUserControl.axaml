@@ -217,11 +217,18 @@
         <TabItem Header="任务安全">
           <StackPanel Spacing="14" Margin="0,12,0,0">
             <TextBlock Text="任务安全" FontSize="18" FontWeight="DemiBold" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding SkipResultCheck, Mode=TwoWay}" />
+              <TextBlock Text="不检查结果" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock Text="开启后，其他演出结束仍会按安全节拍推进页面，但不读取或记录 PGGBM 判定数字；实时校准必须读取判定数字验收 Profile，不适用此开关。生命归零和手动停止仍按原流程处理。"
+                       TextWrapping="Wrap" Opacity="0.75" />
             <StackPanel Orientation="Horizontal" Spacing="10">
               <TextBlock Text="单局技术失败重试次数" VerticalAlignment="Center" />
               <NumericUpDown Value="{Binding PlayFailureRetryCount, Mode=TwoWay}"
-                             Minimum="0" Maximum="3" Width="90" />
-              <TextBlock Text="用于普通单人、校准与协力；每次都会先释放触点并恢复页面"
+                             Minimum="0" Maximum="99" Width="90" />
+              <TextBlock Text="用于普通单人、校准、协力与组曲；组曲失败会重演完整三首"
                          VerticalAlignment="Center" Opacity="0.75" />
             </StackPanel>
             <TextBlock Text="任务启动时最多用 30 秒检测其他程序占用。默认首次警告，再次运行时尝试清理。"
