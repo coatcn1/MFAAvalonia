@@ -276,6 +276,7 @@ public partial class App : Application
 
     private void OnShutdownRequested(object sender, ShutdownRequestedEventArgs e)
     {
+        SystemSleepHelper.ApplyPreventSleep(false);
         TrayIconManager.DisposeTrayIcon(this);
 
         Instances.PersistRuntimeState();
