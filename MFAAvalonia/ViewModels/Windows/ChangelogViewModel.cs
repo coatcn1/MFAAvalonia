@@ -2,6 +2,8 @@
 using MFAAvalonia.Configuration;
 using MFAAvalonia.Helper;
 using MFAAvalonia.Helper.ValueType;
+using MFAAvalonia.Extensions;
+using MFAAvalonia.Extensions.MaaFW;
 using MFAAvalonia.Views.Windows;
 using System;
 using System.IO;
@@ -21,7 +23,12 @@ public partial class ChangelogViewModel : ViewModelBase
     }
 
 
-    [ObservableProperty] private AnnouncementType _type = AnnouncementType.Changelog;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HeaderTitle))]
+    private AnnouncementType _type = AnnouncementType.Changelog;
+    public string HeaderTitle => (Type == AnnouncementType.Changelog ? LangKeys.UpdateCompleted : LangKeys.UpdateLog).ToLocalization();
+    public string ProjectName => MaaProcessor.Interface?.Name ?? "MFAAvalonia";
+    [ObservableProperty] private string _version = MaaProcessor.Interface?.Version ?? string.Empty;
 
     public static bool CheckReleaseNote()
     {
@@ -61,8 +68,7 @@ public partial class ChangelogViewModel : ViewModelBase
                 AnnouncementInfo = content,
             }
         };
-        announcementView.Show();
-        return true;
+        return DocumentWindowHost.Show(announcementView);
     }
 
     public static bool CheckChangelog()
@@ -89,7 +95,7 @@ public partial class ChangelogViewModel : ViewModelBase
     /// <summary>
     /// 复用更新完成公告窗口，并保留用户“不再提醒”的选择。
     /// </summary>
-    public static bool ShowChangelogContent(string? content)
+    public static bool ShowChangelogContent(string? content, string? version = null)
     {
         var viewModel = new ChangelogViewModel
         {
@@ -101,7 +107,7 @@ public partial class ChangelogViewModel : ViewModelBase
             return false;
 
         viewModel.AnnouncementInfo = content;
-        new ChangelogView { DataContext = viewModel }.Show();
-        return true;
+        viewModel.Version = version ?? viewModel.Version;
+        return DocumentWindowHost.Show(new ChangelogView { DataContext = viewModel });
     }
 }

@@ -5,8 +5,9 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:suki="https://github.com/kikipoulet/SukiUI"
     xmlns:markup="https://codewf.com"
-    Height="600"
-    Width="800"
+    Height="640" Width="760" MinWidth="520" MinHeight="420"
+    CanMinimize="False" CanMaximize="False"
+    BackgroundStyle="Flat" BackgroundAnimationEnabled="False"
     x:DataType="windows:ChangelogViewModel"
     xmlns:helper="clr-namespace:MFAAvalonia.Helper"
     xmlns:mdxaml="https://github.com/whistyun/Markdown.Avalonia.Tight"
@@ -20,19 +21,7 @@
     mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
     x:Class="MFAAvalonia.Views.Windows.ChangelogView">
     <suki:SukiWindow.Title>
-        <MultiBinding Converter="{converters:AnnouncementTitleConverter}" Mode="OneWay">
-            <Binding Path='Type' />
-            <markup:I18nBinding>
-                <x:Arguments>
-                    <x:Static Member="helper:LangKeys.UpcomingChanges" />
-                </x:Arguments>
-            </markup:I18nBinding>
-            <markup:I18nBinding>
-                <x:Arguments>
-                    <x:Static Member="helper:LangKeys.UpdateLog" />
-                </x:Arguments>
-            </markup:I18nBinding>
-        </MultiBinding>
+        <Binding Path="HeaderTitle" />
     </suki:SukiWindow.Title>
     <suki:SukiWindow.LogoContent>
         <Image
@@ -45,13 +34,23 @@
 
         <Grid>
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
+            <Border Padding="28,18,28,20" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource SukiBorderBrush}">
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock Text="{Binding ProjectName}" FontSize="13" Foreground="{DynamicResource SukiLowText}" />
+                        <TextBlock Text="{Binding Version}" FontSize="13" Foreground="{DynamicResource SukiLowText}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding HeaderTitle}" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
 
-            <full:MarkdownScrollViewer Grid.Row="0" x:Name="Viewer"
+            <full:MarkdownScrollViewer Grid.Row="1" x:Name="Viewer"
                                        Focusable="True"
-                                       Margin="10,0,10,0"
+                                       Margin="28,20,24,16"
                                        Markdown="{Binding AnnouncementInfo, Mode=OneWay, UpdateSourceTrigger=PropertyChanged}">
                 <full:MarkdownScrollViewer.Engine>
                     <extensions:MarkdownExtension />
@@ -60,16 +59,15 @@
                     <StaticResource ResourceKey="MdXamlPlugin" />
                 </full:MarkdownScrollViewer.Plugins>
                 <full:MarkdownScrollViewer.Styles>
-                    <StyleInclude Source="avares://MFAAvalonia.Core/Assets/Style/MdXamlStyles.axaml" />
+                    <StyleInclude Source="avares://MFAAvalonia.Core/Assets/Style/DocumentStyles.axaml" />
                 </full:MarkdownScrollViewer.Styles>
             </full:MarkdownScrollViewer>
 
 
-            <Grid Grid.Row="1">
+            <Grid Grid.Row="2" Margin="28,12,28,18">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="150" />
-                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <Control Grid.Column="0"
@@ -78,19 +76,19 @@
                 </Control>
                 <Button Grid.Column="1"
                         Click="Close"
+                        IsDefault="True"
                         Content="{markup:I18n {x:Static helper:LangKeys.Confirm}}"
-                        Height="50"
-                        Margin="6"
-                        MaxWidth="150" />
+                        Height="38" MinWidth="96"
+                        HorizontalAlignment="Right" />
                 <CheckBox
                     IsVisible="{Binding Converter='{converters:UniversalEqualityConverter}',
                 Path='Type', ConverterParameter='{x:Static type:AnnouncementType.Changelog}'}"
                     Content="{markup:I18n {x:Static helper:LangKeys.ShowDisclaimerNoMore}}"
-                    Grid.Column="2"
+                    Grid.Column="0"
                     Height="30"
                     HorizontalAlignment="Left"
                     IsChecked="{Binding DoNotRemindThisChangelogAgain}"
-                    Margin="6"
+                    Margin="0,0,16,0"
                     VerticalContentAlignment="Center" />
             </Grid>
         </Grid>

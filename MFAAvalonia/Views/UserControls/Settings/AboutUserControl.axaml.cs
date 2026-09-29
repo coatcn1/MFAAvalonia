@@ -35,7 +35,14 @@ public partial class AboutUserControl : UserControl
         await FileLogExporter.CompressRecentLogs(storageProvider);
     }
     
-    private void DisplayAnnouncement(object? sender, RoutedEventArgs e)
+    private async void DisplayAnnouncement(object? sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(MaaProcessor.Interface?.Welcome))
+            await AnnouncementViewModel.AddAnnouncementAsync(MaaProcessor.Interface.Welcome, projectDir: AppPaths.DataRoot);
+        await AnnouncementViewModel.CheckAnnouncement(forceShow: true);
+    }
+
+    private void DisplayReleaseNotes(object? sender, RoutedEventArgs e)
     {
         if (!ChangelogViewModel.CheckReleaseNote())
         {

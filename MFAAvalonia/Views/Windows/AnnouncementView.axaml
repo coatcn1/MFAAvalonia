@@ -5,8 +5,9 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:suki="https://github.com/kikipoulet/SukiUI"
     xmlns:markup="https://codewf.com"
-    Height="600"
-    Width="800"
+    Height="640" Width="860" MinWidth="560" MinHeight="420"
+    CanMinimize="False" CanMaximize="False"
+    BackgroundStyle="Flat" BackgroundAnimationEnabled="False"
     x:DataType="windows:AnnouncementViewModel"
     xmlns:helper="clr-namespace:MFAAvalonia.Helper"
     xmlns:full="https://github.com/whistyun/Markdown.Avalonia"
@@ -35,12 +36,20 @@
 
         <Grid>
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" /> <!-- 调整左侧宽度 -->
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <Grid>
+            <Border Padding="28,18,28,20" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource SukiBorderBrush}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="{markup:I18n {x:Static helper:LangKeys.Announcement}}"
+                               FontSize="13" Foreground="{DynamicResource SukiLowText}" />
+                    <TextBlock Text="{Binding SelectedAnnouncement.Title}" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+            <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="200" /> <!-- 调整左侧宽度 -->
+                    <ColumnDefinition Width="{Binding SidebarWidth}" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <Grid Grid.Column="0">
@@ -52,12 +61,12 @@
                         ItemsSource="{Binding AnnouncementItems}"
                         SelectedItem="{Binding SelectedAnnouncement}"
                         SelectionMode="Single"
-                        Margin="5">
+                        Margin="16,18,8,16" Background="Transparent" BorderThickness="0">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <TextBlock
                                     Text="{Binding Title}"
-                                    Margin="5"
+                                    Margin="4,6" FontSize="14"
                                     VerticalAlignment="Center"
                                     TextWrapping="Wrap" />
                             </DataTemplate>
@@ -72,7 +81,7 @@
                     <!-- Markdown 内容 -->
                     <full:MarkdownScrollViewer
                         Focusable="True" x:Name="Viewer"
-                        Margin="10,0,10,0" EnableVirtualization="True"
+                        Margin="24,20,24,16" EnableVirtualization="True"
                         IsVisible="{Binding !IsLoading}"
                         Markdown="{Binding AnnouncementContent, Mode=OneWay}">
                         <full:MarkdownScrollViewer.Engine>
@@ -82,33 +91,25 @@
                             <StaticResource ResourceKey="MdXamlPlugin" />
                         </full:MarkdownScrollViewer.Plugins>
                         <full:MarkdownScrollViewer.Styles>
-                            <StyleInclude Source="avares://MFAAvalonia.Core/Assets/Style/MdXamlStyles.axaml" />
+                            <StyleInclude Source="avares://MFAAvalonia.Core/Assets/Style/DocumentStyles.axaml" />
                         </full:MarkdownScrollViewer.Styles>
                     </full:MarkdownScrollViewer>
                 </Grid>
             </Grid>
 
-            <Grid Grid.Row="1">
+            <Grid Grid.Row="2" Margin="28,12,28,18">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="150" />
-                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <Control Grid.Column="0"></Control>
                 <Button Grid.Column="1"
                         Click="Close"
+                        IsDefault="True"
                         Content="{markup:I18n {x:Static helper:LangKeys.Confirm}}"
-                        Height="50"
-                        Margin="6"
-                        MaxWidth="200" />
-                <CheckBox Grid.Column="2"
-                          Content="{markup:I18n {x:Static helper:LangKeys.ShowDisclaimerNoMore}}"
-                          Height="30"
-                          HorizontalAlignment="Left"
-                          IsChecked="{Binding DoNotRemindThisAnnouncementAgain}"
-                          Margin="6"
-                          VerticalContentAlignment="Center" />
+                        Height="38" MinWidth="96"
+                        HorizontalAlignment="Right" />
             </Grid>
         </Grid>
     </LayoutTransformControl>
