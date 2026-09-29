@@ -19,7 +19,8 @@ namespace ColorTextBlock.Avalonia.Geometries
                     SimpleTextSource text,
                     TextLine tline,
                     bool linebreak) :
-                    base(owner, tline.Width, tline.Height, tline.Baseline, owner.TextVerticalAlignment, linebreak)
+                    // 末尾空白也占据行内布局，不能让后续代码背景覆盖前一段文字。
+                    base(owner, tline.WidthIncludingTrailingWhitespace, tline.Height, tline.Baseline, owner.TextVerticalAlignment, linebreak)
                 {
                     Text = text;
                     Line = tline;
