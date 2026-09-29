@@ -4,12 +4,19 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 
 public class Program
 {
     private const int InitDelay = 2500;
     static StringBuilder LogBuilder = new();
     private static string? LogDirectoryOverride;
+    internal static Action<string, string, double?>? ReportProgress;
+    internal static string? FailureMessage;
+    private static int CopiedFiles;
+    private static int TotalFiles;
+    private static long LastProgressTick;
+    internal static string GetLogDirectory() => LogDirectoryOverride ?? Path.Combine(AppContext.BaseDirectory, "logs");
     static void SaveLog()
     {
         try
@@ -39,7 +46,22 @@ public class Program
         return Assembly.GetExecutingAssembly().GetName().Version ?? new Version("1.0.8.0");
     }
 
+    [STAThread]
     static void Main(string[] args)
+    {
+        var headless = args.Contains("--no-progress", StringComparer.OrdinalIgnoreCase);
+        args = args.Where(arg => !arg.Equals("--no-progress", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (OperatingSystem.IsWindows() && args.FirstOrDefault() == "--apply-package" && !headless)
+        {
+            var themeIndex = Array.FindIndex(args, arg => arg.Equals("--theme", StringComparison.OrdinalIgnoreCase));
+            var theme = themeIndex >= 0 && themeIndex + 1 < args.Length ? args[themeIndex + 1] : "Light";
+            UpdaterApplication.Run(() => RunUpdate(args), theme);
+            return;
+        }
+        RunUpdate(args);
+    }
+
+    private static void RunUpdate(string[] args)
     {
         try
         {
@@ -75,6 +97,7 @@ public class Program
         {
             Log($"更新过程发生错误: {ex.Message}");
             Environment.ExitCode = 1;
+            FailureMessage = ex.Message;
             SaveLog();
         }
         finally
@@ -105,18 +128,38 @@ public class Program
             throw new FileNotFoundException("更新包缺少启动器，已拒绝应用。", launcherSource);
 
         LogDirectoryOverride = Path.Combine(target, "logs");
+        ReportProgress?.Invoke("正在更新 MaaBanGDream", "等待主程序正常退出", null);
         Log($"便携包源目录: {source}");
         Log($"便携包目标目录: {target}");
         WaitForMainProcessExitStrict(parentPid, TimeSpan.FromSeconds(60));
 
         Directory.CreateDirectory(target);
+        TotalFiles = CountPortableFiles(source, target, manifestName);
+        CopiedFiles = 0;
+        ReportProgress?.Invoke("正在安装更新", "正在替换程序文件，用户配置和 Profile 将保留", 0);
         CopyPortablePackageContents(source, target, manifestName);
         HandleFileTransfer(manifestSource, Path.Combine(target, manifestName));
         Log($"版本清单已最后写入: {manifestName}");
 
+        ReportProgress?.Invoke("更新已安装", "正在准备运行环境并重新启动", null);
         var launcherPath = Path.Combine(target, launcher);
         StartPortableLauncher(launcherPath, target);
         HandleDeleteDirectoryTransfer(source);
+    }
+
+    private static int CountPortableFiles(string source, string target, string manifestName)
+    {
+        var count = Directory.GetFiles(source).Count(file => !Path.GetFileName(file).Equals(manifestName, StringComparison.OrdinalIgnoreCase));
+        foreach (var directory in Directory.GetDirectories(source))
+        {
+            var name = Path.GetFileName(directory);
+            if (PreservedTopLevelDirectories.Contains(name)
+                || (name.Equals("runtime", StringComparison.OrdinalIgnoreCase)
+                    && File.Exists(Path.Combine(target, "runtime", "python", "python.exe"))))
+                continue;
+            count += Directory.GetFiles(directory, "*", SearchOption.AllDirectories).Length;
+        }
+        return count + 1;
     }
 
     private static Dictionary<string, string> ParsePortablePackageArguments(string[] args)
@@ -204,12 +247,58 @@ public class Program
     {
         if (!File.Exists(launcherPath))
             throw new FileNotFoundException("更新后的启动器不存在。", launcherPath);
+        var restartScript = Path.Combine(workingDirectory, "scripts", "restart-release.ps1");
+        // 后台 PowerShell 仍执行完整便携准备与目录改名，不能直接启动尚未修正路径的 EXE。
+        if (OperatingSystem.IsWindows() && File.Exists(restartScript))
+        {
+            var hiddenStart = new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
+                WorkingDirectory = Path.GetTempPath(),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            var resultPath = Path.Combine(Path.GetTempPath(), $"maabangdream-restart-{Guid.NewGuid():N}.json");
+            foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", restartScript, "-ResultPath", resultPath })
+                hiddenStart.ArgumentList.Add(argument);
+            using var restart = Process.Start(hiddenStart) ?? throw new InvalidOperationException("无法启动便携准备脚本。");
+            try
+            {
+                // 超时不杀进程，也不隐藏错误；准备脚本可能仍在进行首次运行库解压。
+                if (!restart.WaitForExit(300000))
+                    throw new TimeoutException("后台启动准备超过 5 分钟，请检查 logs/updater-launch.log。");
+                // 回执缺失或损坏时也不能在日志收尾阶段重建已经消失的旧目录。
+                if (!Directory.Exists(workingDirectory)) LogDirectoryOverride = null;
+                if (File.Exists(resultPath))
+                {
+                    using var result = JsonDocument.Parse(File.ReadAllText(resultPath));
+                    var reportedRoot = Path.GetFullPath(result.RootElement.GetProperty("install_root").GetString()!);
+                    var parent = Path.GetDirectoryName(Path.GetFullPath(workingDirectory));
+                    if (!string.Equals(Path.GetDirectoryName(reportedRoot), parent, StringComparison.OrdinalIgnoreCase)
+                        || !Directory.Exists(reportedRoot))
+                        throw new InvalidOperationException("便携启动回执的安装目录无效。");
+                    LogDirectoryOverride = Path.Combine(reportedRoot, "logs");
+                }
+                if (restart.ExitCode != 0)
+                    throw new InvalidOperationException("更新文件已安装，但重新启动失败，请检查 logs/updater-launch.log。");
+            }
+            finally
+            {
+                try { File.Delete(resultPath); }
+                catch (Exception ex) { Log($"启动回执清理失败: {ex.Message}"); }
+            }
+            Log("更新后的便携准备脚本执行成功。");
+            return;
+        }
+
         var startInfo = new ProcessStartInfo
         {
             FileName = launcherPath,
             WorkingDirectory = workingDirectory,
             UseShellExecute = RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
             CreateNoWindow = !RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
+            WindowStyle = ProcessWindowStyle.Hidden,
         };
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("更新完成，但启动器启动失败。");
@@ -566,6 +655,16 @@ public class Program
                     Directory.CreateDirectory(destDir);
                 File.Copy(source, dest, true); // 覆盖已存在的文件
                 SetUnixPermissions(dest);
+                if (TotalFiles > 0)
+                {
+                    CopiedFiles++;
+                    // 大包可能含数千文件，限制 UI 通知频率，避免进度回调挤满调度队列。
+                    if (CopiedFiles == TotalFiles || Stopwatch.GetElapsedTime(LastProgressTick).TotalMilliseconds >= 100)
+                    {
+                        LastProgressTick = Stopwatch.GetTimestamp();
+                        ReportProgress?.Invoke("正在安装更新", Path.GetFileName(dest), 100.0 * CopiedFiles / TotalFiles);
+                    }
+                }
                 return; // 成功则返回
             }
             catch (IOException ioEx)

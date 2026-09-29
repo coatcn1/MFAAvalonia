@@ -2,6 +2,7 @@
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
+        <OutputType Condition="'$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'win-arm64'">WinExe</OutputType>
         <TargetFramework>net8.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
@@ -20,10 +21,15 @@
 
 	<PropertyGroup>
 		<InvariantGlobalization>true</InvariantGlobalization> <!-- 移除全球化资源 -->
-		<IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+		<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
 	</PropertyGroup>
 
 	<ItemGroup>
+	  <PackageReference Include="Avalonia.Win32" Version="11.3.12" />
+	  <PackageReference Include="Avalonia.Skia" Version="11.3.12" />
+	  <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.12" />
+	  <EmbeddedResource Include="logo.ico" />
+	  <EmbeddedResource Include="..\MFAAvalonia\Assets\maabangdream-icon.png" Link="brand.png" />
 	  <PackageReference Update="Packaging.Targets">
 	    <Version>0.1.232</Version>
 	  </PackageReference>
