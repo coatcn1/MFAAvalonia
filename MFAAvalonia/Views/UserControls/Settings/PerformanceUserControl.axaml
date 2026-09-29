@@ -46,6 +46,7 @@
                     Classes="Switch"
                     DockPanel.Dock="Right"
                     IsChecked="{Binding PreventSleep}"
+                    ToolTip.Tip="MFA 运行期间保持显示器和系统唤醒，关闭开关或退出后恢复系统设置。"
                     VerticalAlignment="Center" />
                 <StackPanel HorizontalAlignment="Left" VerticalAlignment="Center">
                     <TextBlock

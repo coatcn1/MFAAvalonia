@@ -122,12 +122,9 @@ public partial class PerformanceUserControlModel : ViewModelBase
 
     });
 
-    [ObservableProperty] private bool _preventSleep = ConfigurationManager.Current.GetValue(ConfigurationKeys.PreventSleep, false);
+    [ObservableProperty] private bool _preventSleep = SystemSleepHelper.GetPreventSleepSetting();
 
-    partial void OnPreventSleepChanged(bool value) => HandlePropertyChanged(ConfigurationKeys.PreventSleep, value, (v) =>
-    {
-        SystemSleepHelper.ApplyPreventSleep(v);
-    });
+    partial void OnPreventSleepChanged(bool value) => SystemSleepHelper.SavePreventSleepSetting(value);
 
     public bool IsWindows => OperatingSystem.IsWindows();
 

@@ -12,6 +12,42 @@ static void Assert(bool condition, string message)
         throw new InvalidOperationException(message);
 }
 
+static void PreventSleepPersistsAndReleasesNativeState()
+{
+    if (!OperatingSystem.IsWindows()) return;
+    Assert(Avalonia.Threading.Dispatcher.UIThread.CheckAccess(), "power test must use the UI thread");
+    var configPath = MFAAvalonia.Configuration.GlobalConfiguration.ConfigPath;
+    var original = File.Exists(configPath) ? File.ReadAllBytes(configPath) : null;
+    var config = MFAAvalonia.Configuration.ConfigurationManager.Current.Config;
+    var hadLegacy = config.TryGetValue("PreventSleep", out var legacy);
+    try
+    {
+        config["PreventSleep"] = true;
+        MFAAvalonia.Configuration.GlobalConfiguration.SetValue("PreventSleep", "");
+        Assert(SystemSleepHelper.GetPreventSleepSetting(), "legacy setting must remain readable");
+        SystemSleepHelper.SavePreventSleepSetting(false);
+        Assert(!SystemSleepHelper.GetPreventSleepSetting(), "global false must override legacy true");
+        SystemSleepHelper.SavePreventSleepSetting(true);
+        Assert(SystemSleepHelper.GetPreventSleepSetting(), "enabled setting must persist");
+        Assert(SystemSleepHelper.IsPreventingSleep, "native request was not acquired");
+        var active = NativePowerTest.SetThreadExecutionState(0x80000003);
+        Assert((active & 3) == 3, $"display/system request flags missing: {active:x}");
+        SystemSleepHelper.ApplyPreventSleep(false);
+        Assert(!SystemSleepHelper.IsPreventingSleep, "native request was not released");
+        var cleared = NativePowerTest.SetThreadExecutionState(0x80000000);
+        Assert((cleared & 3) == 0, $"display/system request flags remain: {cleared:x}");
+        Assert(SystemSleepHelper.GetPreventSleepSetting(), "releasing on exit must preserve the saved preference");
+    }
+    finally
+    {
+        SystemSleepHelper.ApplyPreventSleep(false);
+        if (hadLegacy) config["PreventSleep"] = legacy!;
+        else config.Remove("PreventSleep");
+        if (original != null) File.WriteAllBytes(configPath, original);
+        else if (File.Exists(configPath)) File.Delete(configPath);
+    }
+}
+
 static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
 {
     var deadline = DateTime.UtcNow + timeout;
@@ -782,6 +818,7 @@ static async Task GitHubWebFallbackRequiresExactShaSidecarAsync()
     }
 }
 
+PreventSleepPersistsAndReleasesNativeState();
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
@@ -818,4 +855,10 @@ sealed class GitHubRouteHandler(Func<HttpRequestMessage, HttpResponseMessage> re
         Requests.Add(request.RequestUri ?? new Uri("https://invalid.local/"));
         return Task.FromResult(responder(request));
     }
+}
+
+static class NativePowerTest
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    public static extern uint SetThreadExecutionState(uint flags);
 }
