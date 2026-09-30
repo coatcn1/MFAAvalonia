@@ -17,32 +17,42 @@ public static class AdbEndpointIdentityGuard
     private const int AddressFamilyInterNetwork = 2;
     private const int TcpTableOwnerPidListener = 3;
     private const int InsufficientBuffer = 122;
+    private static readonly IPAddress LdLoopbackAlias = IPAddress.Parse("127.0.0.2");
 
     public static bool IsEnabled => Environment.GetEnvironmentVariable(EnableEnvironmentVariable) == "1";
 
-    public static void EnsureSelectedTarget(string serial, string config, bool enabled)
+    public static string EnsureSelectedTarget(string serial, string config, bool enabled)
     {
         if (!enabled || !OperatingSystem.IsWindows()
             || !TryGetLdTarget(serial, config, out var port, out var pid))
-            return;
+            return serial;
 
-        var problem = CheckLdEndpoint(port, pid, ReadWindowsTcpListeners());
-        if (problem != null)
-            throw new AdbTargetMismatchException(problem);
+        var resolvedSerial = ResolveLdSerial(port, pid, ReadWindowsTcpListeners());
+        if (resolvedSerial != null)
+            return resolvedSerial;
+
+        throw new AdbTargetMismatchException(
+            $"所选雷电模拟器的 ADB 端口 {port} 无法安全绑定到该雷电进程。为避免误操作，已阻止连接。请关闭占用同端口的模拟器，或为雷电设置独立 ADB 端口后重新选择设备。");
     }
 
-    public static string? CheckLdEndpoint(int port, int expectedPid, IEnumerable<AdbTcpListener> listeners)
+    public static string? ResolveLdSerial(int port, int expectedPid, IEnumerable<AdbTcpListener> listeners)
     {
         var candidates = listeners.Where(listener => listener.Port == port).ToArray();
-        // Windows 优先选择精确回环绑定；它会遮蔽同端口的 0.0.0.0 绑定。
-        var routed = candidates.Where(listener => listener.Address.Equals(IPAddress.Loopback)).ToArray();
-        if (routed.Length == 0)
-            routed = candidates.Where(listener => listener.Address.Equals(IPAddress.Any)).ToArray();
+        // Windows 优先选择精确地址绑定；只有确认别名最终落到雷电进程时才绕开回环冲突。
+        if (AddressBelongsToProcess(candidates, IPAddress.Loopback, expectedPid))
+            return $"emulator-{port - 1}";
+        if (AddressBelongsToProcess(candidates, LdLoopbackAlias, expectedPid))
+            return $"{LdLoopbackAlias}:{port}";
+        return null;
+    }
 
-        if (routed.Length == 1 && routed[0].ProcessId == expectedPid)
-            return null;
-
-        return $"所选雷电模拟器的 ADB 端口 {port} 未连接到该雷电进程。为避免误操作，已阻止连接。请关闭占用同端口的模拟器，或为雷电设置独立 ADB 端口后重新选择设备。";
+    private static bool AddressBelongsToProcess(AdbTcpListener[] listeners, IPAddress address, int expectedPid)
+    {
+        var exact = listeners.Where(listener => listener.Address.Equals(address)).ToArray();
+        var routed = exact.Length > 0
+            ? exact
+            : listeners.Where(listener => listener.Address.Equals(IPAddress.Any)).ToArray();
+        return routed.Length == 1 && routed[0].ProcessId == expectedPid;
     }
 
     public static bool TryGetLdTarget(string serial, string config, out int port, out int pid)

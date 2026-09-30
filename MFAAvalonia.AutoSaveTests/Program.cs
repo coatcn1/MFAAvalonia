@@ -25,17 +25,17 @@ static void AdbEndpointGuardKeepsLdInputOnSelectedProcess()
 
     var ldListener = new AdbTcpListener(IPAddress.Any, 9999, 41);
     var otherListener = new AdbTcpListener(IPAddress.Loopback, 9999, 42);
-    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, [ldListener]) == null,
-        "LD wildcard listener should be accepted without collision");
-    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, [ldListener, otherListener]) != null,
-        "MuMu loopback listener must block LD ADB input");
-    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, [otherListener]) != null,
+    Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid, [ldListener]) == "emulator-9998",
+        "LD wildcard listener should retain the emulator serial without collision");
+    Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid, [ldListener, otherListener]) == "127.0.0.2:9999",
+        "MuMu loopback listener should route LD through the verified alias");
+    Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid, [otherListener]) == null,
         "wrong process alone must block LD ADB input");
-    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, []) != null,
+    Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid, []) == null,
         "missing LD listener must block connection");
-    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid,
-        [new AdbTcpListener(IPAddress.Loopback, 9999, 41), otherListener]) != null,
-        "ambiguous loopback listeners must block connection");
+    Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid,
+        [ldListener, otherListener, new AdbTcpListener(IPAddress.Parse("127.0.0.2"), 9999, 43)]) == null,
+        "wrong process on the alias must block connection");
 }
 
 static void AdbEndpointGuardReadsWindowsPortOwner()
@@ -53,7 +53,8 @@ static void AdbEndpointGuardReadsWindowsPortOwner()
 
             var config = System.Text.Json.JsonSerializer.Serialize(
                 new { extras = new { ld = new { enable = true, pid = Environment.ProcessId } } });
-            AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}", config, true);
+            Assert(AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}", config, true)
+                == $"emulator-{port - 1}", "correct live port owner should retain the serial");
             try
             {
                 AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}",
@@ -63,8 +64,9 @@ static void AdbEndpointGuardReadsWindowsPortOwner()
             catch (AdbTargetMismatchException)
             {
             }
-            AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}",
-                "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":1}}}", false);
+            Assert(AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}",
+                "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":1}}}", false)
+                == $"emulator-{port - 1}", "disabled guard should keep existing behavior");
             return;
         }
         finally
