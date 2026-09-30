@@ -1,0 +1,30 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctxt="clr-namespace:ColorTextBlock.Avalonia;assembly=ColorTextBlock.Avalonia">
+    <StyleInclude Source="avares://MFAAvalonia.Core/Assets/Style/MdXamlStyles.axaml" />
+    <!-- 只调整阅读弹窗的文档节奏，不改变任务说明和其他 Markdown 组件。 -->
+    <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Margin" Value="0,6" />
+        <Setter Property="LineSpacing" Value="6" />
+    </Style>
+    <!-- 行内代码不增加上下内边距，换行时由正文行距隔开背景和相邻文字。 -->
+    <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CCode">
+        <Setter Property="Padding" Value="4,0" />
+    </Style>
+    <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock.Heading1">
+        <Setter Property="FontSize" Value="24" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Margin" Value="0,0,0,16" />
+    </Style>
+    <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock.Heading2">
+        <Setter Property="FontSize" Value="18" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Margin" Value="0,22,0,8" />
+    </Style>
+    <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock.Heading3">
+        <Setter Property="FontSize" Value="16" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Margin" Value="0,18,0,6" />
+    </Style>
+</Styles>

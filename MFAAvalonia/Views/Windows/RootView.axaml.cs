@@ -350,10 +350,6 @@ public partial class RootView : SukiWindow
                             ToastHelper.Info(MaaProcessor.Interface.Message);
                         }
 
-                        if (!string.IsNullOrWhiteSpace(MaaProcessor.Interface?.Welcome))
-                        {
-                            await AnnouncementViewModel.AddAnnouncementAsync(MaaProcessor.Interface.Welcome, projectDir: AppPaths.DataRoot);
-                        }
                     }));
 
 
@@ -375,8 +371,11 @@ public partial class RootView : SukiWindow
 
                     await Task.Delay(300);
                     VersionChecker.Check();
-                    VersionChecker.ShowPendingResourceChangelogAfterSuccessfulUpdate();
-                    await AnnouncementViewModel.CheckAnnouncement();
+                    if (!string.IsNullOrWhiteSpace(MaaProcessor.Interface?.Welcome))
+                        await AnnouncementViewModel.AddAnnouncementAsync(MaaProcessor.Interface.Welcome, projectDir: AppPaths.DataRoot);
+                    // 本次先展示更新完成；尚未阅读的新公告留到下次启动或手动查看。
+                    if (!VersionChecker.ShowPendingResourceChangelogAfterSuccessfulUpdate())
+                        await AnnouncementViewModel.CheckAnnouncement();
                 }, name: "公告和最新版本检测");
             }
             else

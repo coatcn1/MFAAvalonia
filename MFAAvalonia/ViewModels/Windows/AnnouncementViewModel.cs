@@ -11,6 +11,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -35,6 +37,7 @@ public partial class AnnouncementViewModel : ViewModelBase
     [ObservableProperty] private bool _doNotRemindThisAnnouncementAgain = Convert.ToBoolean(
         GlobalConfiguration.GetValue(ConfigurationKeys.DoNotShowAnnouncementAgain, bool.FalseString));
     [ObservableProperty] private bool _isLoading = true;
+    [ObservableProperty] private Avalonia.Controls.GridLength _sidebarWidth = new(0);
 
     private CancellationTokenSource? _loadCts; // 加载取消令牌
 
@@ -89,7 +92,7 @@ public partial class AnnouncementViewModel : ViewModelBase
 
     public static async Task AddAnnouncementAsync(string announcement, string? title = null, string? projectDir = null)
     {
-        var resolvedContent = await announcement.ResolveContentAsync(projectDir).ConfigureAwait(false);
+        var resolvedContent = await ResolveAnnouncementAsync(announcement, projectDir).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(resolvedContent))
         {
             return;
@@ -100,6 +103,7 @@ public partial class AnnouncementViewModel : ViewModelBase
         var item = new AnnouncementItem
         {
             Title = string.IsNullOrWhiteSpace(parsedTitle) ? (title ?? "Welcome") : parsedTitle,
+            FilePath = announcement,
             Content = TaskQueueView.ConvertCustomMarkup(string.IsNullOrWhiteSpace(remainingContent) ? resolvedContent : remainingContent)
         };
 
@@ -109,14 +113,71 @@ public partial class AnnouncementViewModel : ViewModelBase
             return;
         }
 
-        if (_publicAnnouncementItems.Any(existing =>
-                NormalizeAnnouncementContent(existing.Content).Equals(normalizedContent, StringComparison.Ordinal)))
+        lock (_publicAnnouncementItems)
         {
-            return;
+            _publicAnnouncementItems.RemoveAll(existing => existing.FilePath == announcement);
+            if (_publicAnnouncementItems.Any(existing =>
+                    NormalizeAnnouncementContent(existing.Content).Equals(normalizedContent, StringComparison.Ordinal)))
+                return;
+            _publicAnnouncementItems.Add(item);
         }
-
-        _publicAnnouncementItems.Add(item);
     }
+
+    internal static async Task<string> ResolveAnnouncementAsync(string announcement, string? projectDir,
+        Func<Task<string>>? fetch = null)
+    {
+        var remote = Uri.TryCreate(announcement, UriKind.Absolute, out var uri)
+                     && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
+        if (!remote)
+            return await announcement.ResolveContentAsync(projectDir).ConfigureAwait(false);
+        var cache = Path.Combine(projectDir ?? AppPaths.DataRoot, "cache", "announcements",
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(announcement))) + ".md");
+        var content = string.Empty;
+        try
+        {
+            content = await (fetch?.Invoke() ?? announcement.ResolveContentAsync(projectDir)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LoggerHelper.Warning($"公告下载失败，尝试本地缓存: {ex.Message}");
+        }
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+                await File.WriteAllTextAsync(cache, content).ConfigureAwait(false);
+            }
+            else if (File.Exists(cache))
+                content = await File.ReadAllTextAsync(cache).ConfigureAwait(false);
+            else
+            {
+                // 首次离线启动也可以阅读随包公告，不需要先成功联网一次。
+                var bundled = Path.Combine(projectDir ?? AppPaths.DataRoot, "docs", Path.GetFileName(uri!.AbsolutePath));
+                if (File.Exists(bundled)) content = await File.ReadAllTextAsync(bundled).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            // 公告缓存故障只记录警告，不阻止应用启动，也不清空已经取得的正文。
+            LoggerHelper.Warning($"公告缓存读写失败: {ex.Message}");
+        }
+        return content;
+    }
+
+    internal static string ComputeFingerprint(IEnumerable<AnnouncementItem> items)
+    {
+        var content = string.Join("\n", items.Select(item =>
+        {
+            var title = NormalizeAnnouncementContent(item.Title);
+            var body = NormalizeAnnouncementContent(item.Content);
+            return $"{title.Length}:{title}{body.Length}:{body}";
+        }));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
+    }
+
+    internal static bool ShouldShowAnnouncement(bool force, bool suppressed, string seen, string fingerprint) =>
+        force || (seen != fingerprint && !(string.IsNullOrEmpty(seen) && suppressed));
 
     /// <summary>
     /// 加载公告元数据（Markdown 文件列表）
@@ -130,17 +191,11 @@ public partial class AnnouncementViewModel : ViewModelBase
             var resourcePath = AppPaths.ResourceDirectory;
             var announcementDir = Path.Combine(resourcePath, AnnouncementFolder);
 
-            if (!Directory.Exists(announcementDir))
-            {
-                LoggerHelper.Warning($"公告文件夹不存在: {announcementDir}");
-                return;
-            }
-
             // 后台线程获取 Markdown 文件列表并读取内容
             var tempItems = await Task.Run(() =>
             {
                 var items = new List<AnnouncementItem>();
-                var mdFiles = Directory.GetFiles(announcementDir, "*.md")
+                var mdFiles = (Directory.Exists(announcementDir) ? Directory.GetFiles(announcementDir, "*.md") : Array.Empty<string>())
                     .OrderBy(Path.GetFileName)
                     .ToList();
 
@@ -174,15 +229,18 @@ public partial class AnnouncementViewModel : ViewModelBase
                 .Where(content => !string.IsNullOrWhiteSpace(content))
                 .ToHashSet(StringComparer.Ordinal);
 
-            var publicItems = _publicAnnouncementItems
-                .Where(item => !tempContentSet.Contains(NormalizeAnnouncementContent(item.Content)))
-                .ToList();
+            List<AnnouncementItem> publicItems;
+            lock (_publicAnnouncementItems)
+                publicItems = _publicAnnouncementItems
+                    .Where(item => !tempContentSet.Contains(NormalizeAnnouncementContent(item.Content)))
+                    .ToList();
 
             await DispatcherHelper.RunOnMainThreadAsync(() =>
             {
                 AnnouncementItems.Clear();
                 AnnouncementItems.AddRange(tempItems);
                 AnnouncementItems.AddRange(publicItems);
+                SidebarWidth = new Avalonia.Controls.GridLength(AnnouncementItems.Count > 1 ? 210 : 0);
                 LoggerHelper.Info($"公告数量：{AnnouncementItems.Count}");
             });
         }
@@ -258,43 +316,21 @@ public partial class AnnouncementViewModel : ViewModelBase
         {
             var viewModel = new AnnouncementViewModel();
 
-            // 如果不是强制显示且用户选择了不再提醒，直接返回
-            if (!forceShow && viewModel.DoNotRemindThisAnnouncementAgain)
+            await viewModel.LoadAnnouncementMetadataAsync();
+            if (!viewModel.AnnouncementItems.Any())
             {
+                if (forceShow)
+                    await DispatcherHelper.RunOnMainThreadAsync(() =>
+                        ToastHelper.Warn(LangKeys.Warning.ToLocalization(), LangKeys.AnnouncementEmpty.ToLocalization()));
                 return;
             }
-
-            var resourcePath = AppPaths.ResourceDirectory;
-            var announcementDir = Path.Combine(resourcePath, AnnouncementFolder);
-
-            var scanResult = await Task.Run(() =>
-            {
-                if (!Directory.Exists(announcementDir))
-                {
-                    return (exists: false, hasAnnouncements: false);
-                }
-
-                var hasAnnouncements = Directory.EnumerateFiles(announcementDir, "*.md").Any();
-                return (exists: true, hasAnnouncements);
-            }).ConfigureAwait(false);
-
-            if (!scanResult.exists)
-            {
-                LoggerHelper.Warning($"公告文件夹不存在: {announcementDir}");
+            var fingerprint = ComputeFingerprint(viewModel.AnnouncementItems);
+            var seen = GlobalConfiguration.GetValue(ConfigurationKeys.AnnouncementSeenFingerprint, string.Empty);
+            if (!ShouldShowAnnouncement(forceShow, viewModel.DoNotRemindThisAnnouncementAgain, seen, fingerprint))
                 return;
-            }
-
-            if (!scanResult.hasAnnouncements)
-            {
-                await DispatcherHelper.RunOnMainThreadAsync(() =>
-                    ToastHelper.Warn(LangKeys.Warning.ToLocalization(), LangKeys.AnnouncementEmpty.ToLocalization()));
-                return;
-            }
 
             if (OperatingSystem.IsAndroid())
             {
-                await viewModel.LoadAnnouncementMetadataAsync();
-
                 if (!viewModel.AnnouncementItems.Any())
                 {
                     await DispatcherHelper.RunOnMainThreadAsync(() =>
@@ -314,39 +350,25 @@ public partial class AnnouncementViewModel : ViewModelBase
                         })
                         .WithActionButton(LangKeys.Ok.ToLocalization(), _ => { }, true)
                         .TryShow());
-
+                GlobalConfiguration.SetValue(ConfigurationKeys.AnnouncementSeenFingerprint, fingerprint);
                 return;
             }
 
-            var announcementView = await DispatcherHelper.RunOnMainThreadAsync(() =>
+            await DispatcherHelper.RunOnMainThreadAsync(() =>
             {
                 var view = new AnnouncementView
                 {
                     DataContext = viewModel
                 };
                 viewModel.SetView(view);
-                view.Show();
-                return view;
-            });
-
-            // 异步加载公告元数据
-            await viewModel.LoadAnnouncementMetadataAsync();
-
-            await DispatcherHelper.RunOnMainThreadAsync(() =>
-            {
-                if (!viewModel.AnnouncementItems.Any())
-                {
-                    if (forceShow)
-                    {
-                        ToastHelper.Warn(LangKeys.Warning.ToLocalization(), LangKeys.AnnouncementEmpty.ToLocalization());
-                    }
-
-                    announcementView.Close();
-                    return;
-                }
-
-                // 选中第一个公告
                 viewModel.SelectedAnnouncement = viewModel.AnnouncementItems[0];
+                if (DocumentWindowHost.Show(view))
+                {
+                    GlobalConfiguration.SetValue(ConfigurationKeys.AnnouncementSeenFingerprint, fingerprint);
+                    viewModel.DoNotRemindThisAnnouncementAgain = false;
+                }
+                else
+                    viewModel.Cleanup();
             });
         }
         catch (Exception ex)

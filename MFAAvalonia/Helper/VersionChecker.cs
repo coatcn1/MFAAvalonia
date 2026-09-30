@@ -1842,7 +1842,7 @@ public static class VersionChecker
             throw new FileNotFoundException("更新程序源文件未找到", installedUpdaterPath);
 
         var detachedUpdaterDirectory = Path.Combine(
-            AppPaths.TempResourceDirectory,
+            Path.GetTempPath(),
             $"portable-updater-{Guid.NewGuid():N}");
         Directory.CreateDirectory(detachedUpdaterDirectory);
         var detachedUpdaterPath = Path.Combine(
@@ -1868,6 +1868,9 @@ public static class VersionChecker
         startInfo.ArgumentList.Add(launcher);
         startInfo.ArgumentList.Add("--manifest");
         startInfo.ArgumentList.Add(manifest);
+        startInfo.ArgumentList.Add("--theme");
+        startInfo.ArgumentList.Add(DispatcherHelper.RunOnMainThread(() =>
+            Avalonia.Application.Current?.ActualThemeVariant == Avalonia.Styling.ThemeVariant.Dark ? "Dark" : "Light"));
 
         LoggerHelper.Info(
             $"准备启动便携包更新器：文件={detachedUpdaterPath}，源目录={source}，目标目录={target}，启动器={launcher}");
@@ -3939,7 +3942,7 @@ public static class VersionChecker
     /// <summary>
     /// 只展示与已安装资源版本相同、且在更新包验证后写入的说明。
     /// </summary>
-    public static void ShowPendingResourceChangelogAfterSuccessfulUpdate()
+    public static bool ShowPendingResourceChangelogAfterSuccessfulUpdate()
     {
         var pendingVersion = GlobalConfiguration.GetValue(ConfigurationKeys.PendingResourceChangelogVersion, string.Empty);
         var requiresInstallManifest = Convert.ToBoolean(GlobalConfiguration.GetValue(
@@ -3949,24 +3952,26 @@ public static class VersionChecker
         if (string.IsNullOrWhiteSpace(installedVersion))
             installedVersion = MaaProcessor.Interface?.Version ?? string.Empty;
         if (string.IsNullOrWhiteSpace(pendingVersion))
-            return;
+            return false;
         if (!CanShowPendingResourceChangelog(pendingVersion, installedVersion))
         {
             LoggerHelper.Warning($"跳过未完成资源更新的发布说明：待展示={pendingVersion}，已安装={installedVersion}");
-            return;
+            return false;
         }
         if (requiresInstallManifest && !HasInstalledUpdateManifestVersion(AppPaths.InstallRoot, pendingVersion))
         {
             LoggerHelper.Warning($"跳过尚未写入更新清单的发布说明：版本={pendingVersion}");
-            return;
+            return false;
         }
 
+        var shown = false;
         if (TryReadVersionedReleaseNotes(AppPaths.ResourceDirectory, pendingVersion, out var content))
-            DispatcherHelper.RunOnMainThread(() => ChangelogViewModel.ShowChangelogContent(content));
+            DispatcherHelper.RunOnMainThread(() => shown = ChangelogViewModel.ShowChangelogContent(content, pendingVersion));
         else
             LoggerHelper.Warning($"待展示的发布说明缓存不存在：版本={pendingVersion}");
         GlobalConfiguration.SetValue(ConfigurationKeys.PendingResourceChangelogVersion, string.Empty);
         GlobalConfiguration.SetValue(ConfigurationKeys.PendingResourceChangelogRequiresManifest, bool.FalseString);
+        return shown;
     }
 
     internal static bool CanShowPendingResourceChangelog(string? pendingVersion, string? installedVersion) =>

@@ -640,6 +640,36 @@ static async Task GitHubLatestReleaseNotesIncludeLatestTagAsync()
     }
 }
 
+static async Task AnnouncementsCacheAndContentChangesAsync()
+{
+    var root = Path.Combine(AppContext.BaseDirectory, "announcement-test-" + Guid.NewGuid().ToString("N"));
+    var url = "https://example.invalid/announcement.md";
+    try
+    {
+        Directory.CreateDirectory(Path.Combine(root, "docs"));
+        File.WriteAllText(Path.Combine(root, "docs", "announcement.md"), "# Bundled\n\nOffline notice");
+        var offline = await MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ResolveAnnouncementAsync(url, root, () => Task.FromResult(string.Empty));
+        Assert(offline.Contains("Offline notice"), "first offline launch lost the bundled announcement");
+        var live = await MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ResolveAnnouncementAsync(url, root, () => Task.FromResult("# Online\n\nNew notice"));
+        var cached = await MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ResolveAnnouncementAsync(url, root, () => Task.FromException<string>(new IOException("offline")));
+        Assert(live == cached, "network failure did not retain the cached notice");
+        var other = await MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ResolveAnnouncementAsync("https://other.invalid/notice.md", root, () => Task.FromResult(string.Empty));
+        Assert(other == string.Empty, "announcement cache leaked to a different source");
+        var one = MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ComputeFingerprint([
+            new() { Title = "Notice", Content = "First\r\nSecond" }]);
+        var equivalent = MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ComputeFingerprint([
+            new() { Title = "Notice", Content = " First\nSecond\n" }]);
+        var changed = MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ComputeFingerprint([
+            new() { Title = "Notice", Content = "Changed" }]);
+        Assert(one == equivalent && one != changed, "announcement fingerprint missed or invented a content change");
+        Assert(!MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ShouldShowAnnouncement(false, false, one, one), "unchanged notice repeated");
+        Assert(MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ShouldShowAnnouncement(false, true, one, changed), "new notice inherited the previous suppression");
+        Assert(MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ShouldShowAnnouncement(true, true, one, one), "manual announcement viewing was suppressed");
+        Assert(!MFAAvalonia.ViewModels.Windows.AnnouncementViewModel.ShouldShowAnnouncement(false, true, "", one), "legacy suppression was discarded");
+    }
+    finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+}
+
 static void PackagedReleaseNotesAreReadLocally()
 {
     var tempDirectory = Path.Combine(Path.GetTempPath(), $"mfa-packaged-release-{Guid.NewGuid():N}");
@@ -844,6 +874,7 @@ await GitHubWebFallbackRequiresExactShaSidecarAsync();
 await GitHubReleaseNotesUseExactTagAndWebFallbackAsync();
 await GitHubLatestReleaseNotesIncludeLatestTagAsync();
 PackagedReleaseNotesAreReadLocally();
+await AnnouncementsCacheAndContentChangesAsync();
 Console.WriteLine("MFA auto-save tests passed (including About metadata and native GitHub updater coverage)");
 
 sealed class GitHubRouteHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
