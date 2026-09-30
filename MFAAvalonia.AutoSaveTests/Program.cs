@@ -12,6 +12,69 @@ static void Assert(bool condition, string message)
         throw new InvalidOperationException(message);
 }
 
+static void AdbEndpointGuardKeepsLdInputOnSelectedProcess()
+{
+    const string config = "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":41}}}";
+    Assert(AdbEndpointIdentityGuard.TryGetLdTarget("emulator-9998", config, out var port, out var pid)
+        && port == 9999 && pid == 41, "LD endpoint was not parsed");
+    Assert(!AdbEndpointIdentityGuard.TryGetLdTarget("127.0.0.1:23456", config, out _, out _),
+        "non-emulator serial must not be treated as LD");
+    Assert(AdbEndpointIdentityGuard.TryGetLdTarget("emulator-9998",
+        "{\"extras\":{\"ld\":{\"enable\":true}}}", out _, out var missingPid)
+        && missingPid == 0, "LD target with missing process identity must fail closed");
+
+    var ldListener = new AdbTcpListener(IPAddress.Any, 9999, 41);
+    var otherListener = new AdbTcpListener(IPAddress.Loopback, 9999, 42);
+    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, [ldListener]) == null,
+        "LD wildcard listener should be accepted without collision");
+    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, [ldListener, otherListener]) != null,
+        "MuMu loopback listener must block LD ADB input");
+    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, [otherListener]) != null,
+        "wrong process alone must block LD ADB input");
+    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid, []) != null,
+        "missing LD listener must block connection");
+    Assert(AdbEndpointIdentityGuard.CheckLdEndpoint(port, pid,
+        [new AdbTcpListener(IPAddress.Loopback, 9999, 41), otherListener]) != null,
+        "ambiguous loopback listeners must block connection");
+}
+
+static void AdbEndpointGuardReadsWindowsPortOwner()
+{
+    if (!OperatingSystem.IsWindows()) return;
+
+    for (var attempt = 0; attempt < 20; attempt++)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            if (port % 2 == 0) continue;
+
+            var config = System.Text.Json.JsonSerializer.Serialize(
+                new { extras = new { ld = new { enable = true, pid = Environment.ProcessId } } });
+            AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}", config, true);
+            try
+            {
+                AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}",
+                    "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":1}}}", true);
+                throw new InvalidOperationException("wrong live port owner was accepted");
+            }
+            catch (AdbTargetMismatchException)
+            {
+            }
+            AdbEndpointIdentityGuard.EnsureSelectedTarget($"emulator-{port - 1}",
+                "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":1}}}", false);
+            return;
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+    throw new InvalidOperationException("could not allocate an odd local TCP port for ADB guard test");
+}
+
 static void PreventSleepPersistsAndReleasesNativeState()
 {
     if (!OperatingSystem.IsWindows()) return;
@@ -849,6 +912,8 @@ static async Task GitHubWebFallbackRequiresExactShaSidecarAsync()
 }
 
 PreventSleepPersistsAndReleasesNativeState();
+AdbEndpointGuardKeepsLdInputOnSelectedProcess();
+AdbEndpointGuardReadsWindowsPortOwner();
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();

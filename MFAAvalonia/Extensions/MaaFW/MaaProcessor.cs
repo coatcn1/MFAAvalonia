@@ -1876,7 +1876,12 @@ public class MaaProcessor
         bool showToast = true)
     {
         if (showToast)
-            ToastHelper.Error(message);
+        {
+            if (e is AdbTargetMismatchException)
+                ToastHelper.Error("模拟器连接已阻止", e.Message);
+            else
+                ToastHelper.Error(message);
+        }
         if (hasWarning)
             LoggerHelper.Warning(waringMessage);
         LoggerHelper.Error($"初始化控制器失败：message={message}, reason={e.Message}", e);
@@ -1912,6 +1917,8 @@ public class MaaProcessor
         switch (controllerType)
         {
             case MaaControllerTypes.Adb:
+                AdbEndpointIdentityGuard.EnsureSelectedTarget(Config.AdbDevice.AdbSerial,
+                    Config.AdbDevice.Config, AdbEndpointIdentityGuard.IsEnabled);
                 if (logConfig)
                 {
                     LoggerHelper.Info($"设备名称：{Config.AdbDevice.Name}");
@@ -2432,7 +2439,7 @@ public class MaaProcessor
 
     private void ConfigureMaaProcessorForADB(bool logConfig)
     {
-        if (ViewModel?.CurrentController == MaaControllerTypes.Adb)
+        if ((ViewModel?.CurrentController ?? MaaControllerTypes.Adb) == MaaControllerTypes.Adb)
         {
             var adbInputType = ConfigureAdbInputTypes();
             var adbScreenCapType = ConfigureAdbScreenCapTypes();
@@ -3588,6 +3595,20 @@ public class MaaProcessor
     async private Task TryRunTasksAsync(MaaTasker? maa, string? task, string? param, CancellationToken token)
     {
         if (maa == null || task == null) return;
+
+        if (ViewModel?.CurrentController == MaaControllerTypes.Adb)
+        {
+            try
+            {
+                AdbEndpointIdentityGuard.EnsureSelectedTarget(Config.AdbDevice.AdbSerial,
+                    Config.AdbDevice.Config, AdbEndpointIdentityGuard.IsEnabled);
+            }
+            catch (AdbTargetMismatchException exception)
+            {
+                ToastHelper.Error("模拟器连接已阻止", exception.Message);
+                throw;
+            }
+        }
 
         var job = maa.AppendTask(task, param ?? "{}");
         await TaskManager.RunTaskAsync((Action)(() =>
