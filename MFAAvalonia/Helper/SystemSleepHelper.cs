@@ -1,6 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia.Threading;
 using MFAAvalonia.Configuration;
 
@@ -19,11 +22,14 @@ public static class SystemSleepHelper
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern ExecutionState SetThreadExecutionState(ExecutionState esFlags);
 
+    private static readonly HashSet<TaskExecutionScope> ActiveTaskExecutions = new();
+    private static bool _isShuttingDown;
+
     public static bool IsPreventingSleep { get; private set; }
 
     public static bool GetPreventSleepSetting()
     {
-        // 防息屏属于整个应用；旧版配置只作首次迁移的回退来源。
+        // 开关偏好在配置间共享；旧版配置只作首次迁移的回退来源。
         var global = GlobalConfiguration.GetValue(ConfigurationKeys.PreventSleep);
         return bool.TryParse(global, out var value)
             ? value
@@ -33,17 +39,71 @@ public static class SystemSleepHelper
     public static void SavePreventSleepSetting(bool value)
     {
         GlobalConfiguration.SetValue(ConfigurationKeys.PreventSleep, value ? "true" : "false");
-        ApplyPreventSleep(value);
+        ApplyPreventSleep();
+    }
+
+    public static async Task<IDisposable> BeginTaskExecutionAsync()
+    {
+        var scope = new TaskExecutionScope();
+        if (!OperatingSystem.IsWindows())
+            return scope;
+
+        // 在任务开始前完成申请；多个配置各自结束时不能释放其他任务的保护。
+        await DispatcherHelper.RunOnMainThreadAsync(() =>
+        {
+            if (_isShuttingDown)
+                return;
+            ActiveTaskExecutions.Add(scope);
+            ApplyPreventSleep();
+        });
+        return scope;
+    }
+
+    private static void EndTaskExecution(TaskExecutionScope scope)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(() => EndTaskExecution(scope));
+            return;
+        }
+
+        if (ActiveTaskExecutions.Remove(scope))
+            ApplyPreventSleep();
+    }
+
+    public static void Shutdown()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(Shutdown);
+            return;
+        }
+
+        // 退出后忽略迟到的任务回调，避免清理期间重新申请；不清除已保存的偏好。
+        _isShuttingDown = true;
+        ActiveTaskExecutions.Clear();
+        SetPreventSleepState(false);
     }
 
     public static void ApplyPreventSleep()
     {
         if (!OperatingSystem.IsWindows())
             return;
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            // 在 UI 线程读取最新偏好和任务状态，不执行过时的开关快照。
+            Dispatcher.UIThread.Post(ApplyPreventSleep);
+            return;
+        }
 
         try
         {
-            ApplyPreventSleep(GetPreventSleepSetting());
+            SetPreventSleepState(!_isShuttingDown && ActiveTaskExecutions.Count > 0
+                && GetPreventSleepSetting());
         }
         catch (Exception ex)
         {
@@ -51,17 +111,11 @@ public static class SystemSleepHelper
         }
     }
 
-    public static void ApplyPreventSleep(bool prevent)
+    private static void SetPreventSleepState(bool prevent)
     {
-        if (!OperatingSystem.IsWindows())
+        // 执行状态绑定调用线程；所有调用只从 UI 线程进入。
+        if (prevent == IsPreventingSleep)
             return;
-
-        // 执行状态绑定调用线程，启用、关闭和退出必须始终落在 UI 线程。
-        if (!Dispatcher.UIThread.CheckAccess())
-        {
-            Dispatcher.UIThread.Post(() => ApplyPreventSleep(prevent));
-            return;
-        }
 
         try
         {
@@ -73,11 +127,22 @@ public static class SystemSleepHelper
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
             IsPreventingSleep = prevent;
-            LoggerHelper.Info(prevent ? "已启用运行时防息屏和防休眠。" : "已释放防息屏和防休眠请求。");
+            LoggerHelper.Info(prevent ? "已启用任务运行时防息屏和防休眠。" : "已释放防息屏和防休眠请求。");
         }
         catch (Exception ex)
         {
             LoggerHelper.Error($"设置系统执行状态失败：原因={ex.Message}", ex);
+        }
+    }
+
+    private sealed class TaskExecutionScope : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                EndTaskExecution(this);
         }
     }
 }

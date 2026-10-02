@@ -2918,6 +2918,8 @@ public class MaaProcessor
 
     async private Task ExecuteTasks(CancellationToken token)
     {
+        // 最后一项出队后仍在执行；保护实际异步循环，覆盖停止、失败和异常。
+        using var sleepScope = await SystemSleepHelper.BeginTaskExecutionAsync();
         while (TaskQueue.Count > 0 && !token.IsCancellationRequested)
         {
             // 等待 modal 弹窗确认（display=modal 时任务队列暂停推进）

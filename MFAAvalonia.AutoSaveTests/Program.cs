@@ -1,3 +1,4 @@
+using Avalonia;
 using MFAAvalonia.ViewModels.UsersControls.Settings;
 using MFAAvalonia.Helper;
 using Newtonsoft.Json.Linq;
@@ -77,14 +78,35 @@ static void AdbEndpointGuardReadsWindowsPortOwner()
     throw new InvalidOperationException("could not allocate an odd local TCP port for ADB guard test");
 }
 
-static void PreventSleepPersistsAndReleasesNativeState()
+static void PreventSleepTracksTasksAndReleasesNativeState()
 {
     if (!OperatingSystem.IsWindows()) return;
     Assert(Avalonia.Threading.Dispatcher.UIThread.CheckAccess(), "power test must use the UI thread");
+    static void AssertPowerState(bool expected, string stage)
+    {
+        Assert(SystemSleepHelper.IsPreventingSleep == expected, $"incorrect power state: {stage}");
+        var previous = NativePowerTest.SetThreadExecutionState(expected ? 0x80000003 : 0x80000000);
+        Assert((previous & 3) == (expected ? 3u : 0u), $"incorrect native power flags: {stage}, {previous:x}");
+    }
+
+    static void PumpUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition())
+        {
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            if (DateTime.UtcNow >= deadline)
+                throw new TimeoutException("power lifecycle did not finish on the UI thread");
+            Thread.Sleep(1);
+        }
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+    }
+
     var configPath = MFAAvalonia.Configuration.GlobalConfiguration.ConfigPath;
     var original = File.Exists(configPath) ? File.ReadAllBytes(configPath) : null;
     var config = MFAAvalonia.Configuration.ConfigurationManager.Current.Config;
     var hadLegacy = config.TryGetValue("PreventSleep", out var legacy);
+    var scopes = new List<IDisposable>();
     try
     {
         config["PreventSleep"] = true;
@@ -94,18 +116,114 @@ static void PreventSleepPersistsAndReleasesNativeState()
         Assert(!SystemSleepHelper.GetPreventSleepSetting(), "global false must override legacy true");
         SystemSleepHelper.SavePreventSleepSetting(true);
         Assert(SystemSleepHelper.GetPreventSleepSetting(), "enabled setting must persist");
-        Assert(SystemSleepHelper.IsPreventingSleep, "native request was not acquired");
-        var active = NativePowerTest.SetThreadExecutionState(0x80000003);
-        Assert((active & 3) == 3, $"display/system request flags missing: {active:x}");
-        SystemSleepHelper.ApplyPreventSleep(false);
-        Assert(!SystemSleepHelper.IsPreventingSleep, "native request was not released");
-        var cleared = NativePowerTest.SetThreadExecutionState(0x80000000);
-        Assert((cleared & 3) == 0, $"display/system request flags remain: {cleared:x}");
-        Assert(SystemSleepHelper.GetPreventSleepSetting(), "releasing on exit must preserve the saved preference");
+        Assert(!SystemSleepHelper.IsPreventingSleep, "an enabled preference must not keep an idle application awake");
+        SystemSleepHelper.ApplyPreventSleep();
+        AssertPowerState(false, "idle application startup");
+
+        var first = SystemSleepHelper.BeginTaskExecutionAsync().GetAwaiter().GetResult();
+        scopes.Add(first);
+        AssertPowerState(true, "first task started");
+        var queue = new MFAAvalonia.Helper.ValueType.ObservableQueue<int>();
+        queue.Enqueue(1);
+        queue.Dequeue();
+        AssertPowerState(true, "last task is executing after dequeue");
+
+        var second = SystemSleepHelper.BeginTaskExecutionAsync().GetAwaiter().GetResult();
+        scopes.Add(second);
+        first.Dispose();
+        first.Dispose();
+        AssertPowerState(true, "another task remains after repeated disposal");
+        SystemSleepHelper.SavePreventSleepSetting(false);
+        AssertPowerState(false, "disabled during execution");
+        SystemSleepHelper.SavePreventSleepSetting(true);
+        AssertPowerState(true, "enabled during execution");
+        second.Dispose();
+        AssertPowerState(false, "all tasks completed");
+        Assert(SystemSleepHelper.GetPreventSleepSetting(), "task completion must preserve the saved preference");
+
+        SystemSleepHelper.SavePreventSleepSetting(false);
+        using (var disabledTask = SystemSleepHelper.BeginTaskExecutionAsync().GetAwaiter().GetResult())
+            AssertPowerState(false, "task started with preference disabled");
+        SystemSleepHelper.SavePreventSleepSetting(true);
+        foreach (var outcome in new[] { "completed", "stopped", "failed" })
+        {
+            try
+            {
+                using var task = SystemSleepHelper.BeginTaskExecutionAsync().GetAwaiter().GetResult();
+                AssertPowerState(true, $"task running before {outcome}");
+                if (outcome == "stopped") throw new OperationCanceledException();
+                if (outcome == "failed") throw new ApplicationException("simulated task failure");
+            }
+            catch (OperationCanceledException) when (outcome == "stopped") { }
+            catch (ApplicationException) when (outcome == "failed") { }
+            AssertPowerState(false, $"released after {outcome}");
+        }
+
+        var executeTasks = typeof(MFAAvalonia.Extensions.MaaFW.MaaProcessor)
+            .GetMethod("ExecuteTasks", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        foreach (var outcome in new[] { "completed", "stopped", "failed" })
+        {
+            var processor = new MFAAvalonia.Extensions.MaaFW.MaaProcessor($"power-test-{Guid.NewGuid():N}");
+            try
+            {
+                // 测试只执行真实队列循环，隔离需要完整主窗口的通知订阅。
+                processor.TaskQueue.CountChanged = null;
+                var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                processor.TaskQueue.Enqueue(new MFAAvalonia.Helper.ValueType.MFATask
+                {
+                    Name = "Power lifecycle test",
+                    Action = () => completion.Task,
+                });
+                var execution = (Task)executeTasks.Invoke(processor, [CancellationToken.None])!;
+                Assert(processor.TaskQueue.Count == 0 && !execution.IsCompleted,
+                    "last dequeued task must still be executing");
+                AssertPowerState(true, $"real execution loop waiting before {outcome}");
+                if (outcome == "completed") completion.SetResult();
+                else if (outcome == "stopped") completion.SetCanceled();
+                else completion.SetException(new ApplicationException("simulated execution failure"));
+                PumpUntil(() => execution.IsCompleted && !SystemSleepHelper.IsPreventingSleep);
+                execution.GetAwaiter().GetResult();
+                AssertPowerState(false, $"real execution loop ended with {outcome}");
+            }
+            finally
+            {
+                processor.Dispose();
+            }
+        }
+
+        var workerScope = Task.Run(() => SystemSleepHelper.BeginTaskExecutionAsync());
+        PumpUntil(() => workerScope.IsCompleted);
+        var acquiredOnUi = workerScope.GetAwaiter().GetResult();
+        scopes.Add(acquiredOnUi);
+        AssertPowerState(true, "worker task acquisition applied on UI thread");
+        Task.Run(acquiredOnUi.Dispose).GetAwaiter().GetResult();
+        PumpUntil(() => !SystemSleepHelper.IsPreventingSleep);
+        AssertPowerState(false, "worker task completion released on UI thread");
+
+        var pending = SystemSleepHelper.BeginTaskExecutionAsync().GetAwaiter().GetResult();
+        scopes.Add(pending);
+        Task.Run(() => SystemSleepHelper.SavePreventSleepSetting(true)).GetAwaiter().GetResult();
+        SystemSleepHelper.SavePreventSleepSetting(false);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        AssertPowerState(false, "queued old preference cannot override the latest disabled state");
+        SystemSleepHelper.SavePreventSleepSetting(true);
+        AssertPowerState(true, "task still active before shutdown");
+        var delayedTask = Task.Run(() => SystemSleepHelper.BeginTaskExecutionAsync());
+        SystemSleepHelper.Shutdown();
+        AssertPowerState(false, "application shutdown");
+        PumpUntil(() => delayedTask.IsCompleted);
+        using (var lateWorkerTask = delayedTask.GetAwaiter().GetResult())
+            AssertPowerState(false, "queued worker cannot reacquire after shutdown");
+        using (var lateTask = SystemSleepHelper.BeginTaskExecutionAsync().GetAwaiter().GetResult())
+            AssertPowerState(false, "late task cannot reacquire after shutdown");
+        pending.Dispose();
+        AssertPowerState(false, "late completion cannot reacquire after shutdown");
+        Assert(SystemSleepHelper.GetPreventSleepSetting(), "shutdown must preserve the saved preference");
     }
     finally
     {
-        SystemSleepHelper.ApplyPreventSleep(false);
+        foreach (var scope in scopes) scope.Dispose();
+        SystemSleepHelper.SavePreventSleepSetting(false);
         if (hadLegacy) config["PreventSleep"] = legacy!;
         else config.Remove("PreventSleep");
         if (original != null) File.WriteAllBytes(configPath, original);
@@ -913,7 +1031,31 @@ static async Task GitHubWebFallbackRequiresExactShaSidecarAsync()
     }
 }
 
-PreventSleepPersistsAndReleasesNativeState();
+if (args.Contains("--power-lifecycle"))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.WriteLine("Power lifecycle tests skipped: Windows native power requests required");
+        return;
+    }
+    // 使用真实 UI 线程约束；无平台的 Dispatcher 会掩盖跨线程释放错误。
+    AppBuilder.Configure<Application>().UseWin32().UseSkia().SetupWithoutStarting();
+    AppPaths.Initialize();
+    var originalWorkingDirectory = Environment.CurrentDirectory;
+    try
+    {
+        // MaaFramework 按工作目录生成调试配置，限定在被忽略的测试输出目录。
+        Environment.CurrentDirectory = AppPaths.TempDirectory;
+        PreventSleepTracksTasksAndReleasesNativeState();
+    }
+    finally
+    {
+        Environment.CurrentDirectory = originalWorkingDirectory;
+    }
+    Console.WriteLine("Windows task-scoped power lifecycle tests passed (including real task queue and native flags)");
+    return;
+}
+
 AdbEndpointGuardKeepsLdInputOnSelectedProcess();
 AdbEndpointGuardReadsWindowsPortOwner();
 await DebouncesToLatestChangeAsync();
