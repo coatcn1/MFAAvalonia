@@ -1767,7 +1767,7 @@
         <value>退出程序</value>
     </data>
     <data name="PreventSleep" xml:space="preserve">
-        <value>运行时阻止息屏</value>
+        <value>任务运行时阻止息屏</value>
     </data>
     <data name="Search" xml:space="preserve">
         <value>搜索...</value>

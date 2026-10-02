@@ -1760,7 +1760,7 @@
         <value>啓動失敗</value>
     </data>
     <data name="PreventSleep" xml:space="preserve">
-        <value>執行時防止螢幕關閉</value>
+        <value>任務執行時防止螢幕關閉</value>
     </data>
     <data name="Search" xml:space="preserve">
         <value>搜尋...</value>

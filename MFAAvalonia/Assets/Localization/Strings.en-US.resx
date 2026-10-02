@@ -1757,7 +1757,7 @@ Please do not copy only the main executable by itself.</value>
         <value>Exit Program</value>
     </data>
     <data name="PreventSleep" xml:space="preserve">
-        <value>Prevent Sleep</value>
+        <value>Prevent Sleep During Tasks</value>
     </data>
     <data name="Search" xml:space="preserve">
         <value>Search...</value>

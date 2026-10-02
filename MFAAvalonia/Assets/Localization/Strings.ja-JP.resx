@@ -1926,7 +1926,7 @@
         <value>プログラムを終了する</value>
     </data>
   <data name="PreventSleep" xml:space="preserve">
-        <value>睡眠を妨げる</value>
+        <value>タスク実行中のスリープを防止</value>
     </data>
   <data name="Search" xml:space="preserve">
         <value>検索...</value>

@@ -7,5 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\MFAAvalonia\MFAAvalonia.csproj" />
+    <PackageReference Include="Avalonia.Win32" Version="11.3.12" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.12" />
   </ItemGroup>
 </Project>
