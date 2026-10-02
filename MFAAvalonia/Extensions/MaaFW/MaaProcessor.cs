@@ -46,6 +46,7 @@ public class MaaProcessor
 
     private static readonly Random Random = new();
     private int _taskQueueTotal;
+    private string? _activeAdbSerial;
     private readonly BlockingCollection<Func<Task>> _commandQueue = new();
     private readonly object _commandThreadLock = new();
     private readonly CancellationTokenSource _commandThreadCts = new();
@@ -1876,7 +1877,12 @@ public class MaaProcessor
         bool showToast = true)
     {
         if (showToast)
-            ToastHelper.Error(message);
+        {
+            if (e is AdbTargetMismatchException)
+                ToastHelper.Error("模拟器连接已阻止", e.Message);
+            else
+                ToastHelper.Error(message);
+        }
         if (hasWarning)
             LoggerHelper.Warning(waringMessage);
         LoggerHelper.Error($"初始化控制器失败：message={message}, reason={e.Message}", e);
@@ -1912,6 +1918,8 @@ public class MaaProcessor
         switch (controllerType)
         {
             case MaaControllerTypes.Adb:
+                var resolvedAdbSerial = AdbEndpointIdentityGuard.EnsureSelectedTarget(Config.AdbDevice.AdbSerial,
+                    Config.AdbDevice.Config, AdbEndpointIdentityGuard.IsEnabled);
                 if (logConfig)
                 {
                     LoggerHelper.Info($"设备名称：{Config.AdbDevice.Name}");
@@ -1922,13 +1930,15 @@ public class MaaProcessor
                     LoggerHelper.Info($"控制器配置：{Config.AdbDevice.Config}");
                 }
 
-                return new MaaAdbController(
+                var adbController = new MaaAdbController(
                     Config.AdbDevice.AdbPath,
-                    Config.AdbDevice.AdbSerial,
+                    resolvedAdbSerial,
                     Config.AdbDevice.ScreenCap, Config.AdbDevice.Input,
                     !string.IsNullOrWhiteSpace(Config.AdbDevice.Config) ? Config.AdbDevice.Config : "{}",
                     Path.Combine(AppPaths.InstallRoot, "libs", "MaaAgentBinary")
                 );
+                _activeAdbSerial = resolvedAdbSerial;
+                return adbController;
 
             case MaaControllerTypes.PlayCover:
                 if (logConfig)
@@ -2432,7 +2442,7 @@ public class MaaProcessor
 
     private void ConfigureMaaProcessorForADB(bool logConfig)
     {
-        if (ViewModel?.CurrentController == MaaControllerTypes.Adb)
+        if ((ViewModel?.CurrentController ?? MaaControllerTypes.Adb) == MaaControllerTypes.Adb)
         {
             var adbInputType = ConfigureAdbInputTypes();
             var adbScreenCapType = ConfigureAdbScreenCapTypes();
@@ -3346,6 +3356,8 @@ public class MaaProcessor
         {
             if (ViewModel?.IsConnected == true && MaaTasker?.Controller?.IsConnected == true)
             {
+                if (ViewModel.CurrentController == MaaControllerTypes.Adb)
+                    EnsureActiveAdbRoute();
                 return;
             }
 
@@ -3375,9 +3387,27 @@ public class MaaProcessor
             else
                 ToastHelper.Info(LangKeys.Tip.ToLocalization(), LangKeys.ConnectingTo.ToLocalizationFormatted(true, targetKey));
 
+            var aliasRedirected = false;
             if (isAdb)
             {
                 await EnsureAdbTargetReadyAsync(token, showMessage, delayFingerprintMatching);
+                try
+                {
+                    var resolvedSerial = AdbEndpointIdentityGuard.EnsureSelectedTarget(Config.AdbDevice.AdbSerial,
+                        Config.AdbDevice.Config, AdbEndpointIdentityGuard.IsEnabled);
+                    if (!string.Equals(resolvedSerial, Config.AdbDevice.AdbSerial, StringComparison.OrdinalIgnoreCase))
+                    {
+                        aliasRedirected = true;
+                        LoggerHelper.Info($"雷电 ADB 回环端口冲突，已选择独立地址：{resolvedSerial}");
+                    }
+                }
+                catch (AdbTargetMismatchException exception)
+                {
+                    ViewModel?.SetConnected(false);
+                    AddLog(exception.Message, (IBrush?)null);
+                    ToastHelper.Error("模拟器连接已阻止", exception.Message);
+                    throw;
+                }
             }
 
             if (!isPlayCover && ViewModel?.CurrentDevice == null && InstanceConfiguration.GetValue(ConfigurationKeys.AutoDetectOnConnectionFailed, true) && !delayFingerprintMatching)
@@ -3386,6 +3416,15 @@ public class MaaProcessor
             var tuple = await TryConnectAsync(token);
             var connected = tuple.Item1;
             var shouldRetry = tuple.Item3;
+
+            if (!connected && aliasRedirected)
+            {
+                ViewModel?.SetConnected(false);
+                var exception = new AdbTargetMismatchException("雷电独立 ADB 地址连接失败。为避免影响其他模拟器，已停止重试且不会重启共享 ADB。请检查模拟器状态后重新连接。");
+                AddLog(exception.Message, (IBrush?)null);
+                ToastHelper.Error("模拟器连接已阻止", exception.Message);
+                throw exception;
+            }
 
             if (!connected && isAdb && !tuple.Item2 && shouldRetry)
             {
@@ -3412,6 +3451,7 @@ public class MaaProcessor
 
             if (isAdb)
             {
+                EnsureActiveAdbRoute();
                 ViewModel?.SetAdbRecoverySelectionLock(false);
                 ViewModel?.SyncCurrentAdbSelectionToActiveConfig();
             }
@@ -3423,6 +3463,23 @@ public class MaaProcessor
             ViewModel?.SetAdbRecoverySelectionLock(false);
             _suppressConnectionAttemptErrorToast = previousSuppressConnectionAttemptErrorToast;
             Interlocked.Exchange(ref _isConnecting, 0);
+        }
+    }
+
+    private void EnsureActiveAdbRoute()
+    {
+        try
+        {
+            var resolvedSerial = AdbEndpointIdentityGuard.EnsureSelectedTarget(Config.AdbDevice.AdbSerial,
+                Config.AdbDevice.Config, AdbEndpointIdentityGuard.IsEnabled);
+            if (!string.Equals(resolvedSerial, _activeAdbSerial, StringComparison.OrdinalIgnoreCase))
+                throw new AdbTargetMismatchException("雷电 ADB 路由在连接后发生变化，已阻止继续输入。请重新连接设备。");
+        }
+        catch (AdbTargetMismatchException exception)
+        {
+            ViewModel?.SetConnected(false);
+            ToastHelper.Error("模拟器连接已阻止", exception.Message);
+            throw;
         }
     }
 
@@ -3588,6 +3645,9 @@ public class MaaProcessor
     async private Task TryRunTasksAsync(MaaTasker? maa, string? task, string? param, CancellationToken token)
     {
         if (maa == null || task == null) return;
+
+        if (ViewModel?.CurrentController == MaaControllerTypes.Adb)
+            EnsureActiveAdbRoute();
 
         var job = maa.AppendTask(task, param ?? "{}");
         await TaskManager.RunTaskAsync((Action)(() =>
