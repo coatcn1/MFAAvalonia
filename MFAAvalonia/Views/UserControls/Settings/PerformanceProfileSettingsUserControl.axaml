@@ -143,6 +143,19 @@
             <Separator Margin="0,4" />
             <TextBlock Text="Bestdori 本地数据" FontSize="16" FontWeight="DemiBold" />
             <TextBlock Text="{Binding ChartCatalogText}" TextWrapping="Wrap" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding BestdoriAutoUpdateEnabled, Mode=TwoWay}" />
+              <TextBlock Text="自动增量更新 Bestdori 谱面" VerticalAlignment="Center" />
+            </DockPanel>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="检查间隔（小时）" VerticalAlignment="Center" />
+              <NumericUpDown Value="{Binding BestdoriAutoUpdateIntervalHours, Mode=TwoWay}"
+                             Minimum="1" Maximum="720" Increment="1" Width="100" />
+            </StackPanel>
+            <TextBlock Text="默认每 24 小时，仅在全部实例任务结束后检查；演出期间不更新，关闭后停止自动同步。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <TextBlock Text="{Binding BestdoriSyncStatus}" TextWrapping="Wrap" Opacity="0.8" />
             <Button Content="同步/更新全部谱面（Hard / Expert / Special）"
                     Command="{Binding SyncBestdoriChartsCommand}"
                     HorizontalAlignment="Left" />
@@ -217,6 +230,13 @@
         <TabItem Header="任务安全">
           <StackPanel Spacing="14" Margin="0,12,0,0">
             <TextBlock Text="任务安全" FontSize="18" FontWeight="DemiBold" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding CooperativeMemberLoadingGuardEnabled, Mode=TwoWay}" />
+              <TextBlock Text="协力成员加载页保护" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock Text="默认开启；成员加载页表情图标仍在时，不确认最终歌曲封面。对协力 Native 与 Legacy 均有效；修改后自动保存，在下次任务启动时生效。"
+                       TextWrapping="Wrap" Opacity="0.75" />
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
                             IsChecked="{Binding SkipResultCheck, Mode=TwoWay}" />

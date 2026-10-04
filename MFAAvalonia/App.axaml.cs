@@ -185,6 +185,8 @@ public partial class App : Application
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
                 desktop.ShutdownRequested += OnShutdownRequested;
+                // Exit 只在窗口确认关闭后触发，拒绝退出或托盘隐藏不停止自动更新。
+                desktop.Exit += (_, _) => BestdoriUpdateService.Shared.Shutdown();
                 var services = new ServiceCollection();
 
                 services.AddSingleton(desktop);
@@ -205,6 +207,7 @@ public partial class App : Application
                 var window = views.CreateView<RootViewModel>(Services) as Window;
 
                 desktop.MainWindow = window;
+                BestdoriUpdateService.Shared.Start();
 
                 TrayIconManager.InitializeTrayIcon(this, Instances.RootView, Instances.RootViewModel);
 

@@ -177,6 +177,8 @@ static void PreventSleepTracksTasksAndReleasesNativeState()
                 var execution = (Task)executeTasks.Invoke(processor, [CancellationToken.None])!;
                 Assert(processor.TaskQueue.Count == 0 && !execution.IsCompleted,
                     "last dequeued task must still be executing");
+                Assert(TaskMaintenanceCoordinator.Shared.TryBeginMaintenance(() => false) == null,
+                    "last dequeued production task allowed catalog maintenance");
                 AssertPowerState(true, $"real execution loop waiting before {outcome}");
                 if (outcome == "completed") completion.SetResult();
                 else if (outcome == "stopped") completion.SetCanceled();
@@ -184,6 +186,7 @@ static void PreventSleepTracksTasksAndReleasesNativeState()
                 PumpUntil(() => execution.IsCompleted && !SystemSleepHelper.IsPreventingSleep);
                 execution.GetAwaiter().GetResult();
                 AssertPowerState(false, $"real execution loop ended with {outcome}");
+                Assert(!TaskMaintenanceCoordinator.Shared.IsBusy, "production task leaked catalog lease");
             }
             finally
             {
@@ -191,6 +194,24 @@ static void PreventSleepTracksTasksAndReleasesNativeState()
             }
         }
 
+        using (var maintenance = TaskMaintenanceCoordinator.Shared.TryBeginMaintenance(() => false)!)
+        using (var cancel = new CancellationTokenSource())
+        {
+            var processor = new MFAAvalonia.Extensions.MaaFW.MaaProcessor($"maintenance-wait-{Guid.NewGuid():N}");
+            processor.TaskQueue.CountChanged = null;
+            var called = false;
+            processor.TaskQueue.Enqueue(new MFAAvalonia.Helper.ValueType.MFATask
+            { Name = "Canceled maintenance wait", Action = () => { called = true; return Task.CompletedTask; } });
+            var execution = (Task)executeTasks.Invoke(processor, [cancel.Token])!;
+            Assert(!execution.IsCompleted && processor.TaskQueue.Count == 1, "production task did not await maintenance");
+            cancel.Cancel();
+            PumpUntil(() => execution.IsCompleted);
+            execution.GetAwaiter().GetResult();
+            Assert(!called && (MFAAvalonia.Helper.ValueType.MFATask.MFATaskStatus)typeof(MFAAvalonia.Extensions.MaaFW.MaaProcessor).GetField("Status", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(processor)! == MFAAvalonia.Helper.ValueType.MFATask.MFATaskStatus.STOPPED,
+                "canceling maintenance wait ran input or marked business failure");
+            processor.Dispose();
+        }
+        Assert(!TaskMaintenanceCoordinator.Shared.IsBusy, "canceled production wait leaked lease");
         var workerScope = Task.Run(() => SystemSleepHelper.BeginTaskExecutionAsync());
         PumpUntil(() => workerScope.IsCompleted);
         var acquiredOnUi = workerScope.GetAwaiter().GetResult();
@@ -407,6 +428,121 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
         && options["life_exit_threshold"] == null
         && options["rehearsal_ignore_life_safety"] == null,
         "removed life protection options must not be persisted");
+}
+
+static void CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary()
+{
+    var type = typeof(PerformanceProfileSettingsUserControlModel);
+    var property = type.GetProperty("CooperativeMemberLoadingGuardEnabled");
+    Assert(property != null, "cooperative loading guard switch property missing");
+    var model = new PerformanceProfileSettingsUserControlModel();
+    Assert(property!.GetValue(model) is true, "cooperative loading guard must default to enabled");
+    var capture = type.GetMethod("CaptureRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var pending = type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var loaded = type.GetField("_runtimeOptionsLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var load = type.GetMethod("LoadCooperativeMemberLoadingGuard", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    load.Invoke(model, [new JObject()]);
+    Assert(property.GetValue(model) is true, "old runtime settings must enable guard when field is absent");
+    load.Invoke(model, [new JObject { ["cooperative_member_loading_guard_enabled"] = false }]);
+    Assert(property.GetValue(model) is false, "saved false must survive loading");
+    try
+    {
+        load.Invoke(model, [new JObject { ["cooperative_member_loading_guard_enabled"] = "false" }]);
+        throw new InvalidOperationException("non-boolean loading guard was accepted");
+    }
+    catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
+    property.SetValue(model, false);
+    Assert(pending.GetValue(model) == null, "unloaded or failed settings must not auto-save defaults");
+    Assert(((JObject)capture.Invoke(model, null)!).Value<bool>("cooperative_member_loading_guard_enabled") == false,
+        "disabled loading guard missing from captured settings");
+    loaded.SetValue(model, true);
+    property.SetValue(model, true);
+    property.SetValue(model, false);
+    model.SkipResultCheck = true;
+    Assert(((JObject)pending.GetValue(model)!).Value<bool>("cooperative_member_loading_guard_enabled") == false,
+        "changing another switch must preserve disabled loading guard");
+    // 只验证队列捕获，避免单元测试触发部署目录的真实持久化。
+    var autoSave = type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    ((DebouncedAsyncAction)autoSave.GetValue(model)!).Cancel();
+}
+
+static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
+{
+    var python = Environment.GetEnvironmentVariable("MAABANGDREAM_TEST_PYTHON");
+    var projectRoot = Environment.GetEnvironmentVariable("MAABANGDREAM_TEST_PROJECT_ROOT");
+    if (string.IsNullOrEmpty(python) || string.IsNullOrEmpty(projectRoot)) return;
+    // 使用真实管理器和隔离的 selection 文件，不读取或覆盖用户 Profile。
+    var root = Path.Combine(projectRoot, ".local", "mfa-guard-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var selectionPath = Path.Combine(root, "selection.json");
+    var configPath = Path.Combine(AppContext.BaseDirectory, "profile-manager.json");
+    var originalConfig = File.Exists(configPath) ? await File.ReadAllBytesAsync(configPath) : null;
+    var type = typeof(PerformanceProfileSettingsUserControlModel);
+    var autoSaveField = type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var loadedField = type.GetField("_runtimeOptionsLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var models = new List<PerformanceProfileSettingsUserControlModel>();
+    try
+    {
+        var code = "import sys; sys.path.insert(0,sys.argv[1]); import agent.profile_manager as m; "
+                   + "original=m.handle_request; m.handle_request=lambda request: original(request,root=sys.argv[2]); "
+                   + "raise SystemExit(m.main())";
+        await File.WriteAllTextAsync(configPath, new JObject
+        {
+            ["child_exec"] = python,
+            ["child_args"] = new JArray("-c", code, projectRoot, root),
+            ["artifact_paths"] = new JObject { ["profiles"] = root },
+            ["chart_sync"] = new JObject { ["manifest_path"] = Path.Combine(root, "manifest.json") }
+        }.ToString());
+        await File.WriteAllTextAsync(selectionPath,
+            "{\"version\":1,\"pinned\":{},\"runtime_options\":{\"native_realtime_enabled\":false}}");
+        var oldSelection = await File.ReadAllTextAsync(selectionPath);
+        var model = new PerformanceProfileSettingsUserControlModel();
+        models.Add(model);
+        await model.RefreshAsync();
+        Assert(model.CooperativeMemberLoadingGuardEnabled, "old selection did not load guard as enabled");
+        Assert(model.BestdoriAutoUpdateEnabled && model.BestdoriAutoUpdateIntervalHours == 24,
+            "old selection did not migrate auto update defaults");
+        Assert(await File.ReadAllTextAsync(selectionPath) == oldSelection, "refresh auto-saved defaults");
+        model.CooperativeMemberLoadingGuardEnabled = false;
+        model.BestdoriAutoUpdateEnabled = false;
+        model.BestdoriAutoUpdateIntervalHours = 72;
+        await WaitUntilAsync(() => JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
+            .Value<bool?>("cooperative_member_loading_guard_enabled") == false, TimeSpan.FromSeconds(5));
+        var reloaded = new PerformanceProfileSettingsUserControlModel();
+        models.Add(reloaded);
+        await reloaded.RefreshAsync();
+        Assert(!reloaded.CooperativeMemberLoadingGuardEnabled, "saved false did not survive refresh");
+        Assert(!reloaded.NativeRealtimeEnabled, "guard must be independent of native input switch");
+        Assert(!reloaded.BestdoriAutoUpdateEnabled && reloaded.BestdoriAutoUpdateIntervalHours == 72,
+            "disabled auto update/custom interval did not persist through real manager");
+        reloaded.SkipResultCheck = true;
+        await WaitUntilAsync(() => JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
+            .Value<bool?>("skip_result_check") == true, TimeSpan.FromSeconds(5));
+        Assert(JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
+            .Value<bool?>("cooperative_member_loading_guard_enabled") == false, "other option save lost false");
+        ((DebouncedAsyncAction)autoSaveField.GetValue(reloaded)!).Cancel();
+        await File.WriteAllTextAsync(selectionPath, "broken selection");
+        try { await reloaded.RefreshAsync(); }
+        catch (InvalidOperationException) when (reloaded.StatusText.StartsWith("Profile 管理器调用失败："))
+        {
+            // 无 UI 的测试进程可能没有 Toast 服务，读取失败状态仍须关闭保存门禁。
+        }
+        Assert(loadedField.GetValue(reloaded) is false, "failed refresh must close auto-save gate");
+        reloaded.CooperativeMemberLoadingGuardEnabled = true;
+        reloaded.BestdoriAutoUpdateEnabled = true;
+        reloaded.BestdoriAutoUpdateIntervalHours = 1;
+        reloaded.SkipResultCheck = false;
+        await Task.Delay(750);
+        Assert(await File.ReadAllTextAsync(selectionPath) == "broken selection", "failed read overwrote file with defaults");
+        Console.WriteLine("Cooperative guard profile-manager persistence tests passed: " + root);
+    }
+    finally
+    {
+        foreach (var model in models)
+            ((DebouncedAsyncAction)autoSaveField.GetValue(model)!).Cancel();
+        if (originalConfig != null) await File.WriteAllBytesAsync(configPath, originalConfig);
+        else File.Delete(configPath);
+    }
 }
 
 static void ProfileCurrentSelectionMarkerIsIndependentFromGridSelection()
@@ -1058,12 +1194,15 @@ if (args.Contains("--power-lifecycle"))
 
 AdbEndpointGuardKeepsLdInputOnSelectedProcess();
 AdbEndpointGuardReadsWindowsPortOwner();
+await CatalogMaintenanceTests.RunAsync();
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
 await ReportsTerminalFailureAfterRetryAsync();
 await CancelPreventsPendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
+CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary();
+await CooperativeLoadingGuardPersistsThroughProfileManagerAsync();
 ProfileCurrentSelectionMarkerIsIndependentFromGridSelection();
 ProfileSelectionRequestUsesTaskDifficulty();
 CalibrationRecordsReadNestedSessionResults();
@@ -1084,6 +1223,7 @@ await GitHubReleaseNotesUseExactTagAndWebFallbackAsync();
 await GitHubLatestReleaseNotesIncludeLatestTagAsync();
 PackagedReleaseNotesAreReadLocally();
 await AnnouncementsCacheAndContentChangesAsync();
+await CatalogMaintenanceTests.GlobalShutdownAsync();
 Console.WriteLine("MFA auto-save tests passed (including About metadata and native GitHub updater coverage)");
 
 sealed class GitHubRouteHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler

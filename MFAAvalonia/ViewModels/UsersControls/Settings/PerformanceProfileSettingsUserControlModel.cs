@@ -50,6 +50,10 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
     [ObservableProperty] private bool _cooperativeJitterEnabled = true;
+    [ObservableProperty] private bool _cooperativeMemberLoadingGuardEnabled = true;
+    [ObservableProperty] private bool _bestdoriAutoUpdateEnabled = true;
+    [ObservableProperty] private int _bestdoriAutoUpdateIntervalHours = 24;
+    [ObservableProperty] private string _bestdoriSyncStatus = BestdoriUpdateService.Shared.Status;
     [ObservableProperty] private int _playFailureRetryCount = 1;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _normalCalibrationSpeed = 2.00m;
@@ -59,6 +63,11 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
 
     public PerformanceProfileSettingsUserControlModel()
     {
+        var weakModel = new WeakReference<PerformanceProfileSettingsUserControlModel>(this);
+        BestdoriUpdateService.Shared.StatusChanged += () => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            if (weakModel.TryGetTarget(out var model)) model.BestdoriSyncStatus = BestdoriUpdateService.Shared.Status;
+        });
         var debounce = TimeSpan.FromMilliseconds(500);
         _runtimeAutoSave = new DebouncedAsyncAction(
             SavePendingRuntimeOptionsAsync,
@@ -97,6 +106,13 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnCooperativeJitterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnCooperativeMemberLoadingGuardEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnBestdoriAutoUpdateEnabledChanged(bool value)
+    {
+        BestdoriUpdateService.Shared.SetAutomaticEnabled(value);
+        ScheduleRuntimeAutoSave();
+    }
+    partial void OnBestdoriAutoUpdateIntervalHoursChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnPlayFailureRetryCountChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnNormalCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -107,6 +123,9 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [RelayCommand]
     public async Task RefreshAsync()
     {
+        if (IsBusy) return;
+        // 本次读取失败后不允许把未完整加载的界面状态自动写回。
+        _runtimeOptionsLoaded = false;
         _suspendAutoSave++;
         try
         {
@@ -144,6 +163,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("native_realtime_enabled") ?? false;
                 CooperativeJitterEnabled =
                     runtime?.Value<bool?>("cooperative_jitter_enabled") ?? true;
+                LoadCooperativeMemberLoadingGuard(runtime);
+                LoadBestdoriAutoUpdateOptions(runtime);
                 PlayFailureRetryCount = Math.Clamp(
                     runtime?.Value<int?>("play_failure_retry_count") ?? 1, 0, 99);
                 var speeds = (JObject?)runtime?["calibration_note_speeds"];
@@ -194,6 +215,9 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
         ["cooperative_jitter_enabled"] = CooperativeJitterEnabled,
+        ["cooperative_member_loading_guard_enabled"] = CooperativeMemberLoadingGuardEnabled,
+        ["bestdori_auto_update_enabled"] = BestdoriAutoUpdateEnabled,
+        ["bestdori_auto_update_interval_hours"] = BestdoriAutoUpdateIntervalHours,
         ["play_failure_retry_count"] = PlayFailureRetryCount,
         ["calibration_note_speeds"] = new JObject
         {
@@ -204,6 +228,24 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
             ["Special"] = SpecialCalibrationSpeed
         }
     };
+
+    private void LoadCooperativeMemberLoadingGuard(JObject? runtime)
+    {
+        var value = runtime?["cooperative_member_loading_guard_enabled"];
+        if (value != null && value.Type != JTokenType.Boolean)
+            throw new InvalidDataException("cooperative_member_loading_guard_enabled 必须是布尔值");
+        // 旧配置没有字段时开启保护，显式 false 必须按用户选择保留。
+        CooperativeMemberLoadingGuardEnabled = value?.Value<bool>() ?? true;
+    }
+
+    private void LoadBestdoriAutoUpdateOptions(JObject? runtime)
+    {
+        var plan = ProfileManagerClient.ParseAutoUpdateOptions(runtime, null);
+        BestdoriAutoUpdateEnabled = plan.Enabled;
+        BestdoriAutoUpdateIntervalHours = plan.IntervalHours;
+        // 成功重载时即使属性值未变化，也要更新服务的即时允许状态。
+        BestdoriUpdateService.Shared.SetAutomaticEnabled(plan.Enabled);
+    }
 
     private JObject CaptureProfileSettings() => new()
     {
@@ -331,10 +373,10 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         var succeeded = await RunAsync(async () =>
         {
             StatusText = "正在同步 Bestdori 谱面；已有文件会校验后复用…";
-            await ProfileManagerClient.SyncBestdoriChartsAsync(message =>
+            await BestdoriUpdateService.Shared.RunManualAsync(message =>
             {
                 if (!string.IsNullOrWhiteSpace(message))
-                    StatusText = $"谱面同步：{message}";
+                    Avalonia.Threading.Dispatcher.UIThread.Post(() => StatusText = $"谱面同步：{message}");
             });
             ChartCatalogText = await ProfileManagerClient.LoadChartCatalogStatusAsync();
             StatusText = $"Bestdori 谱面同步完成；{ChartCatalogText}";
@@ -612,16 +654,49 @@ public sealed class PerformanceProfileItem
 
 internal static class ProfileManagerClient
 {
+    public static async Task<JObject?> LoadCacheArtifactPathsAsync()
+    {
+        if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "profile-manager.json"))) return null;
+        return (JObject?)(await LoadConfigAsync().ConfigureAwait(false))["artifact_paths"];
+    }
+
+    internal static BestdoriUpdatePlan ParseAutoUpdateOptions(JObject? runtime, DateTimeOffset? lastSuccess)
+    {
+        var enabled = runtime?["bestdori_auto_update_enabled"];
+        var interval = runtime?["bestdori_auto_update_interval_hours"];
+        if (enabled != null && enabled.Type != JTokenType.Boolean)
+            throw new InvalidDataException("bestdori_auto_update_enabled 必须是布尔值");
+        if (interval != null && (interval.Type != JTokenType.Integer || interval.Value<long>() is < 1 or > 720))
+            throw new InvalidDataException("bestdori_auto_update_interval_hours 必须为 1..720 的整数");
+        return new BestdoriUpdatePlan(enabled?.Value<bool>() ?? true, interval?.Value<int>() ?? 24, lastSuccess);
+    }
+
+    public static async Task<BestdoriUpdatePlan> LoadAutoUpdatePlanAsync(CancellationToken token)
+    {
+        var result = await InvokeAsync(new JObject { ["operation"] = "runtime-options" }, token).ConfigureAwait(false);
+        var config = await LoadConfigAsync().ConfigureAwait(false);
+        var manifestPath = config["chart_sync"]?.Value<string>("manifest_path")
+                           ?? throw new InvalidDataException("chart_sync 缺少 manifest_path");
+        DateTimeOffset? last = null;
+        if (File.Exists(manifestPath))
+        {
+            var manifest = JObject.Parse(await File.ReadAllTextAsync(manifestPath, token).ConfigureAwait(false));
+            var stamp = manifest.ContainsKey("last_successful_check_at")
+                ? manifest.Value<string>("last_successful_check_at") : manifest.Value<string>("generated_at");
+            if (DateTimeOffset.TryParse(stamp, out var parsed)) last = parsed;
+        }
+        return ParseAutoUpdateOptions((JObject?)result["runtime_options"], last);
+    }
     private static async Task<JObject> LoadConfigAsync()
     {
         var configPath = Path.Combine(AppContext.BaseDirectory, "profile-manager.json");
         if (!File.Exists(configPath)) throw new FileNotFoundException("未找到部署生成的 profile-manager.json", configPath);
-        return JObject.Parse(await File.ReadAllTextAsync(configPath));
+        return JObject.Parse(await File.ReadAllTextAsync(configPath).ConfigureAwait(false));
     }
 
     public static async Task<ArtifactLocationItem[]> LoadArtifactLocationsAsync()
     {
-        var config = await LoadConfigAsync();
+        var config = await LoadConfigAsync().ConfigureAwait(false);
         var paths = (JObject?)config["artifact_paths"]
                     ?? throw new InvalidDataException("profile-manager.json 缺少 artifact_paths，请重新运行部署脚本");
         return paths.Properties()
@@ -633,7 +708,7 @@ internal static class ProfileManagerClient
     {
         try
         {
-            var config = await LoadConfigAsync();
+            var config = await LoadConfigAsync().ConfigureAwait(false);
             var sync = (JObject?)config["chart_sync"]
                        ?? throw new InvalidDataException("profile-manager.json 缺少 chart_sync，请重新运行部署脚本");
             var manifestPath = sync.Value<string>("manifest_path")
@@ -662,9 +737,9 @@ internal static class ProfileManagerClient
         return $"{songs} 首 / {charts} 张谱面 / {jackets} 个封面 / {errors} 个错误 · 更新于 {generatedAt}";
     }
 
-    public static async Task SyncBestdoriChartsAsync(Action<string> progress)
+    public static async Task SyncBestdoriChartsAsync(Action<string> progress, CancellationToken token)
     {
-        var config = await LoadConfigAsync();
+        var config = await LoadConfigAsync().ConfigureAwait(false);
         var sync = (JObject?)config["chart_sync"]
                    ?? throw new InvalidDataException("profile-manager.json 缺少 chart_sync，请重新运行部署脚本");
         var startInfo = new ProcessStartInfo(sync.Value<string>("child_exec")
@@ -680,23 +755,35 @@ internal static class ProfileManagerClient
             startInfo.ArgumentList.Add(arg);
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
 
-        using var process = Process.Start(startInfo)
-                            ?? throw new InvalidOperationException("无法启动 Bestdori 谱面同步器");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token, BestdoriUpdateService.Shared.ShutdownToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(45));
+        using var child = new CancelableChildProcess(startInfo, timeout.Token);
+        var process = child.Process;
         var stderrTask = process.StandardError.ReadToEndAsync();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(45));
         try
         {
-            while (await process.StandardOutput.ReadLineAsync(timeout.Token) is { } line)
+            while (await process.StandardOutput.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
                 progress(line);
-            await process.WaitForExitAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            // 同步 kill 可能让读取先返回 EOF，已退出的 WaitForExitAsync 不一定抛取消。
+            timeout.Token.ThrowIfCancellationRequested();
+            BestdoriUpdateService.Shared.ShutdownToken.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException)
         {
             if (!process.HasExited)
                 process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            if (token.IsCancellationRequested || BestdoriUpdateService.Shared.ShutdownToken.IsCancellationRequested) throw;
             throw new TimeoutException("Bestdori 谱面同步超过 45 分钟，已终止同步器");
         }
-        var stderr = (await stderrTask).Trim();
+        catch
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            throw;
+        }
+        var stderr = (await stderrTask.ConfigureAwait(false)).Trim();
         if (process.ExitCode != 0)
             throw new InvalidOperationException(
                 string.IsNullOrWhiteSpace(stderr)
@@ -704,9 +791,9 @@ internal static class ProfileManagerClient
                     : stderr);
     }
 
-    public static async Task<JObject> InvokeAsync(JObject request)
+    public static async Task<JObject> InvokeAsync(JObject request, CancellationToken token = default)
     {
-        var config = await LoadConfigAsync();
+        var config = await LoadConfigAsync().ConfigureAwait(false);
         var startInfo = new ProcessStartInfo(config.Value<string>("child_exec") ?? throw new InvalidDataException("缺少 child_exec"))
         {
             UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
@@ -722,15 +809,28 @@ internal static class ProfileManagerClient
                 effectiveEnvironment["note_speed"] = 5.0;
             request["environment"] = effectiveEnvironment;
         }
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 Profile 管理器");
-        await process.StandardInput.WriteAsync(request.ToString(Formatting.None));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token, BestdoriUpdateService.Shared.ShutdownToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        using var child = new CancelableChildProcess(startInfo, timeout.Token);
+        var process = child.Process;
+        await process.StandardInput.WriteAsync(request.ToString(Formatting.None)).ConfigureAwait(false);
         process.StandardInput.Close();
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
-        using var timeout = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await process.WaitForExitAsync(timeout.Token);
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            timeout.Token.ThrowIfCancellationRequested();
+            BestdoriUpdateService.Shared.ShutdownToken.ThrowIfCancellationRequested();
+        }
+        catch
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            throw;
+        }
+        var stdout = await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
         var response = JObject.Parse(stdout);
         if (process.ExitCode != 0 || response.Value<bool>("ok") != true)
             throw new InvalidOperationException(response.Value<string>("error") ?? stderr.Trim());
