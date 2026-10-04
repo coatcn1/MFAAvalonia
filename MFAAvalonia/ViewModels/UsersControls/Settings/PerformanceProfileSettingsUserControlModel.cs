@@ -50,6 +50,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
     [ObservableProperty] private bool _cooperativeJitterEnabled = true;
+    [ObservableProperty] private bool _cooperativeMemberLoadingGuardEnabled = true;
     [ObservableProperty] private int _playFailureRetryCount = 1;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _normalCalibrationSpeed = 2.00m;
@@ -97,6 +98,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnCooperativeJitterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnCooperativeMemberLoadingGuardEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnPlayFailureRetryCountChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnNormalCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -107,6 +109,9 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [RelayCommand]
     public async Task RefreshAsync()
     {
+        if (IsBusy) return;
+        // 本次读取失败后不允许把未完整加载的界面状态自动写回。
+        _runtimeOptionsLoaded = false;
         _suspendAutoSave++;
         try
         {
@@ -144,6 +149,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("native_realtime_enabled") ?? false;
                 CooperativeJitterEnabled =
                     runtime?.Value<bool?>("cooperative_jitter_enabled") ?? true;
+                LoadCooperativeMemberLoadingGuard(runtime);
                 PlayFailureRetryCount = Math.Clamp(
                     runtime?.Value<int?>("play_failure_retry_count") ?? 1, 0, 99);
                 var speeds = (JObject?)runtime?["calibration_note_speeds"];
@@ -194,6 +200,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
         ["cooperative_jitter_enabled"] = CooperativeJitterEnabled,
+        ["cooperative_member_loading_guard_enabled"] = CooperativeMemberLoadingGuardEnabled,
         ["play_failure_retry_count"] = PlayFailureRetryCount,
         ["calibration_note_speeds"] = new JObject
         {
@@ -204,6 +211,15 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
             ["Special"] = SpecialCalibrationSpeed
         }
     };
+
+    private void LoadCooperativeMemberLoadingGuard(JObject? runtime)
+    {
+        var value = runtime?["cooperative_member_loading_guard_enabled"];
+        if (value != null && value.Type != JTokenType.Boolean)
+            throw new InvalidDataException("cooperative_member_loading_guard_enabled 必须是布尔值");
+        // 旧配置没有字段时开启保护，显式 false 必须按用户选择保留。
+        CooperativeMemberLoadingGuardEnabled = value?.Value<bool>() ?? true;
+    }
 
     private JObject CaptureProfileSettings() => new()
     {

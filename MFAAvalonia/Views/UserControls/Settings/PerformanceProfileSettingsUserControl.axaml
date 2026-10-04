@@ -219,6 +219,13 @@
             <TextBlock Text="任务安全" FontSize="18" FontWeight="DemiBold" />
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding CooperativeMemberLoadingGuardEnabled, Mode=TwoWay}" />
+              <TextBlock Text="协力成员加载页保护" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock Text="默认开启；成员加载页表情图标仍在时，不确认最终歌曲封面。对协力 Native 与 Legacy 均有效；修改后自动保存，在下次任务启动时生效。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
                             IsChecked="{Binding SkipResultCheck, Mode=TwoWay}" />
               <TextBlock Text="不检查结果" VerticalAlignment="Center" />
             </DockPanel>
