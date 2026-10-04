@@ -143,6 +143,19 @@
             <Separator Margin="0,4" />
             <TextBlock Text="Bestdori 本地数据" FontSize="16" FontWeight="DemiBold" />
             <TextBlock Text="{Binding ChartCatalogText}" TextWrapping="Wrap" />
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                            IsChecked="{Binding BestdoriAutoUpdateEnabled, Mode=TwoWay}" />
+              <TextBlock Text="自动增量更新 Bestdori 谱面" VerticalAlignment="Center" />
+            </DockPanel>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="检查间隔（小时）" VerticalAlignment="Center" />
+              <NumericUpDown Value="{Binding BestdoriAutoUpdateIntervalHours, Mode=TwoWay}"
+                             Minimum="1" Maximum="720" Increment="1" Width="100" />
+            </StackPanel>
+            <TextBlock Text="默认每 24 小时，仅在全部实例任务结束后检查；演出期间不更新，关闭后停止自动同步。"
+                       TextWrapping="Wrap" Opacity="0.75" />
+            <TextBlock Text="{Binding BestdoriSyncStatus}" TextWrapping="Wrap" Opacity="0.8" />
             <Button Content="同步/更新全部谱面（Hard / Expert / Special）"
                     Command="{Binding SyncBestdoriChartsCommand}"
                     HorizontalAlignment="Left" />

@@ -119,6 +119,7 @@ public partial class RootView : SukiWindow
 
     public void BeforeClosed(bool noLog, bool stopTask)
     {
+        BestdoriUpdateService.Shared.Shutdown();
         if (!GlobalHotkeyService.IsStopped)
         {
             if (Instances.RootViewModel.IsRunning)

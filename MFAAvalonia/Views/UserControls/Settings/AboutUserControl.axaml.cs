@@ -1,4 +1,4 @@
-﻿using Avalonia;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
@@ -51,86 +51,25 @@ public partial class AboutUserControl : UserControl
         }
     }
     
-    private void ClearCache_Click(object? sender, RoutedEventArgs e)
+    private async void ClearCache_Click(object? sender, RoutedEventArgs e)
     {
-        if (!Instances.RootViewModel.Idle)
-        {
-            ToastHelper.Warn(
-                LangKeys.Warning.ToLocalization(),
-                LangKeys.StopTaskBeforeClearCache.ToLocalization());
-            return;
-        }
-
-        var processors = MaaProcessor.Processors.ToList();
-        foreach (var processor in processors)
-        {
-            try
-            {
-                processor.SetTasker();
-            }
-            catch (Exception ex)
-            {
-                LoggerHelper.Error($"清理缓存前停止实例 {processor.InstanceId} 的 Tasker 失败: {ex}");
-                ToastHelper.Error(
-                    LangKeys.ClearCacheFailed.ToLocalization(),
-                    LangKeys.ClearCacheStopInstanceFailed.ToLocalizationFormatted(false, processor.InstanceId));
-                return;
-            }
-        }
-
-        var remainingTasker = processors.FirstOrDefault(p => p.MaaTasker != null || p.ScreenshotTasker != null);
-        if (remainingTasker != null)
-        {
-            LoggerHelper.Warning($"清理缓存中止：实例 {remainingTasker.InstanceId} 仍存在未释放 Tasker。");
-            ToastHelper.Error(
-                LangKeys.ClearCacheFailed.ToLocalization(),
-                LangKeys.ClearCacheInstanceStillUsingResource.ToLocalizationFormatted(false, remainingTasker.InstanceId));
-            return;
-        }
-
-        var baseDirectory = AppPaths.DataRoot;
-        var debugDirectory = Path.Combine(baseDirectory, "debug");
-        var logsDirectory = AppPaths.LogsDirectory;
-
         try
         {
-            ClearDirectory(debugDirectory);
-            ClearDirectory(logsDirectory);
-            Directory.CreateDirectory(debugDirectory);
-            Directory.CreateDirectory(logsDirectory);
-            ToastHelper.Success(LangKeys.ClearCacheSuccess.ToLocalization());
+            var artifacts = await ViewModels.UsersControls.Settings.ProfileManagerClient.LoadCacheArtifactPathsAsync();
+            // 不终止其他实例，也不强制释放外部文件锁；任务与维护共用同一门禁。
+            var result = CacheMaintenance.Clean(AppPaths.DataRoot, artifacts,
+                TaskMaintenanceCoordinator.Shared, () => TaskMaintenanceCoordinator.CheckQueuedTasks(() => MaaProcessor.Processors.Any(p => p.TaskQueue.Count > 0)));
+            foreach (var failure in result.Failures)
+                LoggerHelper.Warning($"缓存未清理：{failure.Path}，{failure.Reason}");
+            LoggerHelper.Info($"清理缓存：{result.Describe()}");
+            if (result.Failures.Count > 0 || result.DeletedFiles == 0)
+                ToastHelper.Warn("缓存清理结果", result.Describe());
+            else ToastHelper.Success(result.Describe());
         }
         catch (Exception ex)
         {
             LoggerHelper.Error($"清理缓存失败: {ex.Message}");
             ToastHelper.Error(LangKeys.ClearCacheFailed.ToLocalization(), ex.Message);
-        }
-    }
-    
-    private static void ClearDirectory(string directoryPath)
-    {
-        if (!Directory.Exists(directoryPath))
-        {
-            return;
-        }
-
-        foreach (var entry in Directory.EnumerateFileSystemEntries(directoryPath))
-        {
-            try
-            {
-                if (Directory.Exists(entry))
-                {
-                    Directory.Delete(entry, true);
-                }
-                else
-                {
-                    File.Delete(entry);
-                }
-            }
-            catch (Exception ex)
-            {
-                LoggerHelper.Warning($"清理缓存项失败: {entry}, {ex.Message}");
-            }
         }
     }
     

@@ -177,6 +177,8 @@ static void PreventSleepTracksTasksAndReleasesNativeState()
                 var execution = (Task)executeTasks.Invoke(processor, [CancellationToken.None])!;
                 Assert(processor.TaskQueue.Count == 0 && !execution.IsCompleted,
                     "last dequeued task must still be executing");
+                Assert(TaskMaintenanceCoordinator.Shared.TryBeginMaintenance(() => false) == null,
+                    "last dequeued production task allowed catalog maintenance");
                 AssertPowerState(true, $"real execution loop waiting before {outcome}");
                 if (outcome == "completed") completion.SetResult();
                 else if (outcome == "stopped") completion.SetCanceled();
@@ -184,6 +186,7 @@ static void PreventSleepTracksTasksAndReleasesNativeState()
                 PumpUntil(() => execution.IsCompleted && !SystemSleepHelper.IsPreventingSleep);
                 execution.GetAwaiter().GetResult();
                 AssertPowerState(false, $"real execution loop ended with {outcome}");
+                Assert(!TaskMaintenanceCoordinator.Shared.IsBusy, "production task leaked catalog lease");
             }
             finally
             {
@@ -191,6 +194,24 @@ static void PreventSleepTracksTasksAndReleasesNativeState()
             }
         }
 
+        using (var maintenance = TaskMaintenanceCoordinator.Shared.TryBeginMaintenance(() => false)!)
+        using (var cancel = new CancellationTokenSource())
+        {
+            var processor = new MFAAvalonia.Extensions.MaaFW.MaaProcessor($"maintenance-wait-{Guid.NewGuid():N}");
+            processor.TaskQueue.CountChanged = null;
+            var called = false;
+            processor.TaskQueue.Enqueue(new MFAAvalonia.Helper.ValueType.MFATask
+            { Name = "Canceled maintenance wait", Action = () => { called = true; return Task.CompletedTask; } });
+            var execution = (Task)executeTasks.Invoke(processor, [cancel.Token])!;
+            Assert(!execution.IsCompleted && processor.TaskQueue.Count == 1, "production task did not await maintenance");
+            cancel.Cancel();
+            PumpUntil(() => execution.IsCompleted);
+            execution.GetAwaiter().GetResult();
+            Assert(!called && (MFAAvalonia.Helper.ValueType.MFATask.MFATaskStatus)typeof(MFAAvalonia.Extensions.MaaFW.MaaProcessor).GetField("Status", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(processor)! == MFAAvalonia.Helper.ValueType.MFATask.MFATaskStatus.STOPPED,
+                "canceling maintenance wait ran input or marked business failure");
+            processor.Dispose();
+        }
+        Assert(!TaskMaintenanceCoordinator.Shared.IsBusy, "canceled production wait leaked lease");
         var workerScope = Task.Run(() => SystemSleepHelper.BeginTaskExecutionAsync());
         PumpUntil(() => workerScope.IsCompleted);
         var acquiredOnUi = workerScope.GetAwaiter().GetResult();
@@ -479,8 +500,12 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         models.Add(model);
         await model.RefreshAsync();
         Assert(model.CooperativeMemberLoadingGuardEnabled, "old selection did not load guard as enabled");
+        Assert(model.BestdoriAutoUpdateEnabled && model.BestdoriAutoUpdateIntervalHours == 24,
+            "old selection did not migrate auto update defaults");
         Assert(await File.ReadAllTextAsync(selectionPath) == oldSelection, "refresh auto-saved defaults");
         model.CooperativeMemberLoadingGuardEnabled = false;
+        model.BestdoriAutoUpdateEnabled = false;
+        model.BestdoriAutoUpdateIntervalHours = 72;
         await WaitUntilAsync(() => JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
             .Value<bool?>("cooperative_member_loading_guard_enabled") == false, TimeSpan.FromSeconds(5));
         var reloaded = new PerformanceProfileSettingsUserControlModel();
@@ -488,6 +513,8 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         await reloaded.RefreshAsync();
         Assert(!reloaded.CooperativeMemberLoadingGuardEnabled, "saved false did not survive refresh");
         Assert(!reloaded.NativeRealtimeEnabled, "guard must be independent of native input switch");
+        Assert(!reloaded.BestdoriAutoUpdateEnabled && reloaded.BestdoriAutoUpdateIntervalHours == 72,
+            "disabled auto update/custom interval did not persist through real manager");
         reloaded.SkipResultCheck = true;
         await WaitUntilAsync(() => JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
             .Value<bool?>("skip_result_check") == true, TimeSpan.FromSeconds(5));
@@ -502,6 +529,8 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         }
         Assert(loadedField.GetValue(reloaded) is false, "failed refresh must close auto-save gate");
         reloaded.CooperativeMemberLoadingGuardEnabled = true;
+        reloaded.BestdoriAutoUpdateEnabled = true;
+        reloaded.BestdoriAutoUpdateIntervalHours = 1;
         reloaded.SkipResultCheck = false;
         await Task.Delay(750);
         Assert(await File.ReadAllTextAsync(selectionPath) == "broken selection", "failed read overwrote file with defaults");
@@ -1165,6 +1194,7 @@ if (args.Contains("--power-lifecycle"))
 
 AdbEndpointGuardKeepsLdInputOnSelectedProcess();
 AdbEndpointGuardReadsWindowsPortOwner();
+await CatalogMaintenanceTests.RunAsync();
 await DebouncesToLatestChangeAsync();
 await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
@@ -1193,6 +1223,7 @@ await GitHubReleaseNotesUseExactTagAndWebFallbackAsync();
 await GitHubLatestReleaseNotesIncludeLatestTagAsync();
 PackagedReleaseNotesAreReadLocally();
 await AnnouncementsCacheAndContentChangesAsync();
+await CatalogMaintenanceTests.GlobalShutdownAsync();
 Console.WriteLine("MFA auto-save tests passed (including About metadata and native GitHub updater coverage)");
 
 sealed class GitHubRouteHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
