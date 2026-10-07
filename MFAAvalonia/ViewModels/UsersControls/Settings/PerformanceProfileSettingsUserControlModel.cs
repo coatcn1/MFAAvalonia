@@ -49,6 +49,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _chartPredictionEnabled = true;
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
+    [ObservableProperty] private bool _nativeLifeFeedbackEnabled;
+    [ObservableProperty] private bool _nativeWaitJitterFilterEnabled;
     [ObservableProperty] private bool _cooperativeJitterEnabled = true;
     [ObservableProperty] private bool _cooperativeMemberLoadingGuardEnabled = true;
     [ObservableProperty] private bool _bestdoriAutoUpdateEnabled = true;
@@ -105,6 +107,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnChartPredictionEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeLifeFeedbackEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeWaitJitterFilterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnCooperativeJitterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnCooperativeMemberLoadingGuardEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnBestdoriAutoUpdateEnabledChanged(bool value)
@@ -161,6 +165,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("chart_predict_presses") ?? true;
                 NativeRealtimeEnabled =
                     runtime?.Value<bool?>("native_realtime_enabled") ?? false;
+                LoadNativeExperimentalOptions(runtime);
                 CooperativeJitterEnabled =
                     runtime?.Value<bool?>("cooperative_jitter_enabled") ?? true;
                 LoadCooperativeMemberLoadingGuard(runtime);
@@ -214,6 +219,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["chart_prediction_enabled"] = ChartPredictionEnabled,
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
+        ["native_life_feedback_enabled"] = NativeLifeFeedbackEnabled,
+        ["native_wait_jitter_filter_enabled"] = NativeWaitJitterFilterEnabled,
         ["cooperative_jitter_enabled"] = CooperativeJitterEnabled,
         ["cooperative_member_loading_guard_enabled"] = CooperativeMemberLoadingGuardEnabled,
         ["bestdori_auto_update_enabled"] = BestdoriAutoUpdateEnabled,
@@ -228,6 +235,22 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
             ["Special"] = SpecialCalibrationSpeed
         }
     };
+
+    private void LoadNativeExperimentalOptions(JObject? runtime)
+    {
+        static bool Read(JObject? source, string key)
+        {
+            var value = source?[key];
+            if (value != null && value.Type != JTokenType.Boolean)
+                throw new InvalidDataException($"{key} 必须是布尔值");
+            return value?.Value<bool>() ?? false;
+        }
+        // 先校验整个实验选项组，失败时不能留下半组新值供自动保存。
+        var life = Read(runtime, "native_life_feedback_enabled");
+        var wait = Read(runtime, "native_wait_jitter_filter_enabled");
+        NativeLifeFeedbackEnabled = life;
+        NativeWaitJitterFilterEnabled = wait;
+    }
 
     private void LoadCooperativeMemberLoadingGuard(JObject? runtime)
     {
