@@ -19,7 +19,8 @@ public static class AdbEndpointIdentityGuard
     private const int InsufficientBuffer = 122;
     private static readonly IPAddress LdLoopbackAlias = IPAddress.Parse("127.0.0.2");
 
-    public static bool IsEnabled => Environment.GetEnvironmentVariable(EnableEnvironmentVariable) == "1";
+    // 设备身份核验默认开启；只有显式 0 可用于诊断回退，不能把缺失环境当作关闭。
+    public static bool IsEnabled => Environment.GetEnvironmentVariable(EnableEnvironmentVariable) != "0";
 
     public static string EnsureSelectedTarget(string serial, string config, bool enabled)
     {
@@ -37,6 +38,8 @@ public static class AdbEndpointIdentityGuard
 
     public static string? ResolveLdSerial(int port, int expectedPid, IEnumerable<AdbTcpListener> listeners)
     {
+        // 已声明雷电却没有合法进程身份时必须拒绝，不能把未知 owner 当成身份证据。
+        if (expectedPid <= 0) return null;
         var candidates = listeners.Where(listener => listener.Port == port).ToArray();
         // Windows 优先选择精确地址绑定；只有确认别名最终落到雷电进程时才绕开回环冲突。
         if (AddressBelongsToProcess(candidates, IPAddress.Loopback, expectedPid))
@@ -44,6 +47,21 @@ public static class AdbEndpointIdentityGuard
         if (AddressBelongsToProcess(candidates, LdLoopbackAlias, expectedPid))
             return $"{LdLoopbackAlias}:{port}";
         return null;
+    }
+
+    public static void EnsureSnapshotRoute(string serial, string config, bool enabled, string? activeSerial, string resolvedSerial)
+    {
+        if (!enabled || !OperatingSystem.IsWindows() || !TryGetLdTarget(serial, config, out _, out _)) return;
+        if (!string.Equals(activeSerial, resolvedSerial, StringComparison.OrdinalIgnoreCase))
+            throw new AdbTargetMismatchException("截图 ADB 路由与主控制器不一致，已拒绝创建截图控制器。请重新连接设备。");
+    }
+
+    public static bool CanRetrySharedAdb(string serial, string config, bool enabled, string? activeSerial, string resolvedSerial)
+    {
+        if (!enabled || !OperatingSystem.IsWindows() || !TryGetLdTarget(serial, config, out _, out _)) return true;
+        // 必须依据实际创建的主路由；预检后的别名变化或未知主路由不能重启共享 ADB。
+        return string.Equals(activeSerial, serial, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(activeSerial, resolvedSerial, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool AddressBelongsToProcess(AdbTcpListener[] listeners, IPAddress address, int expectedPid)
@@ -74,7 +92,8 @@ public static class AdbEndpointIdentityGuard
                 || enabled.ValueKind != JsonValueKind.True)
                 return false;
 
-            if (ld.TryGetProperty("pid", out var processId))
+            // 错误类型或越界 PID 仍属于待核验的雷电，保留 0 交给 resolver 拒绝。
+            if (ld.TryGetProperty("pid", out var processId) && processId.ValueKind == JsonValueKind.Number)
                 processId.TryGetInt32(out pid);
             port = consolePort + 1;
             return true;

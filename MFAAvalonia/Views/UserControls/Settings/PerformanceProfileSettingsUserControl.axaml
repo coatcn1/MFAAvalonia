@@ -136,9 +136,9 @@
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
                             IsChecked="{Binding NativeLifeFeedbackEnabled, Mode=TwoWay}" />
-              <TextBlock Text="Native 掉血判定纠偏（实验）" VerticalAlignment="Center" />
+              <TextBlock Text="Native 判定反馈微调（实验）" VerticalAlignment="Center" />
             </DockPanel>
-            <TextBlock Text="默认关闭；仅 Native 正式演奏在持续掉血时短暂采集 FAST/SLOW，并在安全空档纠偏未来输入。排练、校准和 Legacy 不使用。"
+            <TextBlock Text="默认关闭；Native 正式演奏每 3 秒以 20Hz 采样 0.8 秒，12 秒内三个可信同向窗口建立趋势，确认生效后按新反馈继续微调。不依赖掉血；排练、校准和 Legacy 不使用。"
                        TextWrapping="Wrap" Opacity="0.75" />
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
