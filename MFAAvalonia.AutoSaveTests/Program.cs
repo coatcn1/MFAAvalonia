@@ -13,6 +13,25 @@ static void Assert(bool condition, string message)
         throw new InvalidOperationException(message);
 }
 
+static void AdbEndpointGuardDefaultsToEnabledAndHonoursExplicitDisable()
+{
+    var name = AdbEndpointIdentityGuard.EnableEnvironmentVariable;
+    var original = Environment.GetEnvironmentVariable(name);
+    try
+    {
+        foreach (var (value, expected) in new (string?, bool)[] { (null, true), ("1", true), ("0", false) })
+        {
+            Environment.SetEnvironmentVariable(name, value);
+            Assert(AdbEndpointIdentityGuard.IsEnabled == expected,
+                $"ADB endpoint guard default/override mismatch: {value ?? "missing"}");
+        }
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable(name, original);
+    }
+}
+
 static void AdbEndpointGuardKeepsLdInputOnSelectedProcess()
 {
     const string config = "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":41}}}";
@@ -23,6 +42,9 @@ static void AdbEndpointGuardKeepsLdInputOnSelectedProcess()
     Assert(AdbEndpointIdentityGuard.TryGetLdTarget("emulator-9998",
         "{\"extras\":{\"ld\":{\"enable\":true}}}", out _, out var missingPid)
         && missingPid == 0, "LD target with missing process identity must fail closed");
+    Assert(!AdbEndpointIdentityGuard.TryGetLdTarget("emulator-9998",
+        "{\"extras\":{\"ld\":{\"enable\":false,\"pid\":41}}}", out _, out _),
+        "disabled LD extras must keep the original controller scope");
 
     var ldListener = new AdbTcpListener(IPAddress.Any, 9999, 41);
     var otherListener = new AdbTcpListener(IPAddress.Loopback, 9999, 42);
@@ -37,6 +59,11 @@ static void AdbEndpointGuardKeepsLdInputOnSelectedProcess()
     Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid,
         [ldListener, otherListener, new AdbTcpListener(IPAddress.Parse("127.0.0.2"), 9999, 43)]) == null,
         "wrong process on the alias must block connection");
+    Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, missingPid, [ldListener]) == null,
+        "unknown selected process must not reuse a known listener");
+    Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid,
+        [new AdbTcpListener(IPAddress.Any, 9999, 43), otherListener]) == null,
+        "changed wildcard owner must invalidate the previously resolved route");
 }
 
 static void AdbEndpointGuardReadsWindowsPortOwner()
@@ -76,6 +103,75 @@ static void AdbEndpointGuardReadsWindowsPortOwner()
         }
     }
     throw new InvalidOperationException("could not allocate an odd local TCP port for ADB guard test");
+}
+
+static void AdbEndpointGuardRejectsDeclaredLdWithInvalidProcessIdentity()
+{
+    foreach (var value in new[] { "null", "\"41\"", "{}", "[]", "true", "0", "-1", "2147483648" })
+    {
+        var config = "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":" + value + "}}}";
+        Assert(AdbEndpointIdentityGuard.TryGetLdTarget("emulator-9998", config, out var port, out var pid),
+            $"declared LD with invalid pid must remain guarded: {value}");
+        Assert(AdbEndpointIdentityGuard.ResolveLdSerial(port, pid,
+            [new AdbTcpListener(IPAddress.Any, port, pid)]) == null,
+            $"invalid pid must never prove a route, including an unknown listener owner: {value}");
+    }
+}
+
+static void AdbEndpointGuardKeepsSnapshotAndRetryBoundToTheMainRoute()
+{
+    if (!OperatingSystem.IsWindows()) return;
+    const string config = "{\"extras\":{\"ld\":{\"enable\":true,\"pid\":41}}}";
+    const string original = "emulator-9998";
+    const string alias = "127.0.0.2:9999";
+    AdbEndpointIdentityGuard.EnsureSnapshotRoute(original, config, true, alias, alias);
+    foreach (var main in new string?[] { original, null })
+    {
+        try
+        {
+            AdbEndpointIdentityGuard.EnsureSnapshotRoute(original, config, true, main, alias);
+            throw new InvalidOperationException("snapshot masked a missing or different main route");
+        }
+        catch (AdbTargetMismatchException) { }
+    }
+    Assert(!AdbEndpointIdentityGuard.CanRetrySharedAdb(original, config, true, alias, alias),
+        "original precheck followed by failed main alias must not restart shared ADB");
+    Assert(!AdbEndpointIdentityGuard.CanRetrySharedAdb(original, config, true, original, alias),
+        "changed route after failed main must not restart shared ADB");
+    Assert(!AdbEndpointIdentityGuard.CanRetrySharedAdb(original, config, true, null, original),
+        "unknown actual main route must not restart shared ADB");
+    Assert(AdbEndpointIdentityGuard.CanRetrySharedAdb(original, config, true, original, original),
+        "unchanged original route should retain legacy retry policy");
+    Assert(AdbEndpointIdentityGuard.CanRetrySharedAdb(original, config, false, alias, alias),
+        "explicitly disabled guard should retain legacy retry policy");
+    AdbEndpointIdentityGuard.EnsureSnapshotRoute("custom:9999", config, true, original, alias);
+
+    // 纯控制流 oracle，不创建 Controller，也不执行启动、连接或重启 ADB。
+    foreach (var changesBeforeAction in new[] { false, true })
+    {
+        var attempts = 0;
+        var restarts = 0;
+        var main = original;
+        var resolved = original;
+        try
+        {
+            for (var round = 0; round < 3; round++)
+            {
+                if (round == 1 && changesBeforeAction) resolved = alias;
+                if (!AdbEndpointIdentityGuard.CanRetrySharedAdb(original, config, true, main, resolved))
+                    throw new AdbTargetMismatchException("retry route changed before action");
+                attempts++;
+                if (round == 2) restarts++;
+                if (round == 1) main = resolved = alias;
+                if (!AdbEndpointIdentityGuard.CanRetrySharedAdb(original, config, true, main, resolved))
+                    throw new AdbTargetMismatchException("retry main alias failed");
+            }
+            throw new InvalidOperationException("unsafe retry chain did not stop");
+        }
+        catch (AdbTargetMismatchException) { }
+        Assert(attempts == (changesBeforeAction ? 1 : 2) && restarts == 0,
+            "route changed before or after retry must stop before shared restart");
+    }
 }
 
 static void PreventSleepTracksTasksAndReleasesNativeState()
@@ -1241,6 +1337,9 @@ if (args.Contains("--power-lifecycle"))
     return;
 }
 
+AdbEndpointGuardDefaultsToEnabledAndHonoursExplicitDisable();
+AdbEndpointGuardRejectsDeclaredLdWithInvalidProcessIdentity();
+AdbEndpointGuardKeepsSnapshotAndRetryBoundToTheMainRoute();
 AdbEndpointGuardKeepsLdInputOnSelectedProcess();
 AdbEndpointGuardReadsWindowsPortOwner();
 await CatalogMaintenanceTests.RunAsync();
