@@ -57,6 +57,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private int _bestdoriAutoUpdateIntervalHours = 24;
     [ObservableProperty] private string _bestdoriSyncStatus = BestdoriUpdateService.Shared.Status;
     [ObservableProperty] private int _playFailureRetryCount = 1;
+    [ObservableProperty] private int _liveBoostTarget = 3;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _normalCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _hardCalibrationSpeed = 2.00m;
@@ -118,6 +119,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     }
     partial void OnBestdoriAutoUpdateIntervalHoursChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnPlayFailureRetryCountChanged(int value) => ScheduleRuntimeAutoSave();
+    partial void OnLiveBoostTargetChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnNormalCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnHardCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -170,6 +172,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     runtime?.Value<bool?>("cooperative_jitter_enabled") ?? true;
                 LoadCooperativeMemberLoadingGuard(runtime);
                 LoadBestdoriAutoUpdateOptions(runtime);
+                LoadLiveBoostTarget(runtime);
                 PlayFailureRetryCount = Math.Clamp(
                     runtime?.Value<int?>("play_failure_retry_count") ?? 1, 0, 99);
                 var speeds = (JObject?)runtime?["calibration_note_speeds"];
@@ -226,6 +229,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["bestdori_auto_update_enabled"] = BestdoriAutoUpdateEnabled,
         ["bestdori_auto_update_interval_hours"] = BestdoriAutoUpdateIntervalHours,
         ["play_failure_retry_count"] = PlayFailureRetryCount,
+        ["live_boost_target"] = ValidateLiveBoostTarget(LiveBoostTarget),
         ["calibration_note_speeds"] = new JObject
         {
             ["Easy"] = EasyCalibrationSpeed,
@@ -235,6 +239,21 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
             ["Special"] = SpecialCalibrationSpeed
         }
     };
+
+    private static int ValidateLiveBoostTarget(int value)
+    {
+        if (value is < 0 or > 3)
+            throw new InvalidDataException("live_boost_target 必须是 0..3 的整数");
+        return value;
+    }
+
+    private void LoadLiveBoostTarget(JObject? runtime)
+    {
+        var token = runtime?["live_boost_target"];
+        if (token != null && token.Type != JTokenType.Integer)
+            throw new InvalidDataException("live_boost_target 必须是 0..3 的整数");
+        LiveBoostTarget = ValidateLiveBoostTarget(token?.Value<int>() ?? 3);
+    }
 
     private void LoadNativeExperimentalOptions(JObject? runtime)
     {
