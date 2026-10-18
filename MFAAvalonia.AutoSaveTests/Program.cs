@@ -472,6 +472,43 @@ static async Task CancelPreventsPendingSaveAsync()
     Assert(calls == 0, "cancelled save still ran");
 }
 
+static void LiveBoostTargetPreservesDefaultsZeroAndAutoSaveBoundary()
+{
+    var type = typeof(PerformanceProfileSettingsUserControlModel);
+    var model = new PerformanceProfileSettingsUserControlModel();
+    var load = type.GetMethod("LoadLiveBoostTarget", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var capture = type.GetMethod("CaptureRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var pending = type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var loaded = type.GetField("_runtimeOptionsLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var save = (DebouncedAsyncAction)type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(model)!;
+    Assert(model.LiveBoostTarget == 3, "new live boost target must default 3");
+    load.Invoke(model, [new JObject()]);
+    Assert(model.LiveBoostTarget == 3, "old settings must default live boost target 3");
+    load.Invoke(model, [new JObject { ["live_boost_target"] = 0 }]);
+    Assert(model.LiveBoostTarget == 0 && ((JObject)capture.Invoke(model, null)!).Value<int>("live_boost_target") == 0,
+        "explicit zero lost during load/capture");
+    foreach (var bad in new JToken[] { new JValue(true), new JValue(1.0), new JValue("3"), new JValue(4), JValue.CreateNull() })
+    {
+        try
+        {
+            load.Invoke(model, [new JObject { ["live_boost_target"] = bad }]);
+            throw new InvalidOperationException("invalid live boost target accepted");
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
+        Assert(model.LiveBoostTarget == 0 && pending.GetValue(model) == null, "bad load overwrote or saved default");
+    }
+    loaded.SetValue(model, true);
+    model.LiveBoostTarget = 3;
+    model.LiveBoostTarget = 0;
+    model.SkipResultCheck = true;
+    Assert(((JObject)pending.GetValue(model)!).Value<int>("live_boost_target") == 0,
+        "auto-save capture lost zero live boost target");
+    save.Cancel();
+    var restored = new PerformanceProfileSettingsUserControlModel();
+    load.Invoke(restored, [(JObject)capture.Invoke(model, null)!]);
+    Assert(restored.LiveBoostTarget == 0, "live boost target did not survive capture/reload");
+}
+
 static void RuntimeOptionsIncludeProcessCleanupSwitch()
 {
     var model = new PerformanceProfileSettingsUserControlModel();
@@ -1350,6 +1387,7 @@ await RetriesOnceAsync();
 await ReportsTerminalFailureAfterRetryAsync();
 await CancelPreventsPendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
+LiveBoostTargetPreservesDefaultsZeroAndAutoSaveBoundary();
 NativeExperimentalOptionsKeepBooleanAndSaveBoundaries();
 CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary();
 await CooperativeLoadingGuardPersistsThroughProfileManagerAsync();

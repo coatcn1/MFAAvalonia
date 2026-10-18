@@ -215,6 +215,23 @@
           </StackPanel>
         </TabItem>
 
+        <TabItem Header="体力消耗">
+          <StackPanel Margin="18" Spacing="12">
+            <TextBlock Text="LIVE BOOST 体力消耗" FontSize="18" FontWeight="DemiBold" />
+            <TextBlock Text="默认每次演出消耗 3 点。零消耗测试请选择 0，恢复日常任务前请改回 3。"
+                       TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <TextBlock Text="目标消耗" VerticalAlignment="Center" />
+              <NumericUpDown Value="{Binding LiveBoostTarget, Mode=TwoWay}"
+                             Minimum="0" Maximum="3" Increment="1" FormatString="0" Width="120" />
+            </StackPanel>
+            <TextBlock Text="进入单人、自动、协力、竞演或巡回演出前检查并按需修正。无法确认或保存失败时停止任务；不使用全消耗选项。"
+                       TextWrapping="Wrap" />
+            <TextBlock Text="挑战演出使用独立点数；一键实时和组曲中途续跑不离开当前现场修改体力。"
+                       TextWrapping="Wrap" />
+          </StackPanel>
+        </TabItem>
+
         <TabItem Header="调试目录">
           <StackPanel Spacing="10" Margin="0,12,0,0">
             <TextBlock Text="调试与结果目录" FontSize="18" FontWeight="DemiBold" />
