@@ -28,6 +28,16 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     private ProfileSaveRequest? _pendingProfileSave;
     private int _suspendAutoSave;
     private bool _runtimeOptionsLoaded;
+    private Task? _initialLoadTask;
+    private bool _refreshPending;
+
+    // 只复用进行中的首次加载；读取失败后重新挂载允许重试，成功后不覆盖待保存编辑。
+    public Task EnsureLoadedAsync()
+    {
+        if (_runtimeOptionsLoaded) return Task.CompletedTask;
+        if (_initialLoadTask is { IsCompleted: false }) return _initialLoadTask;
+        return _initialLoadTask = RefreshAsync();
+    }
 
     public string[] Difficulties { get; } = ["Easy", "Normal", "Hard", "Expert", "Special"];
     public ObservableCollection<PerformanceProfileItem> Profiles { get; } = [];
@@ -50,6 +60,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
     [ObservableProperty] private bool _nativeLifeFeedbackEnabled;
+    [ObservableProperty] private bool _nativeEarlyStartEnabled;
     [ObservableProperty] private bool _nativeWaitJitterFilterEnabled;
     [ObservableProperty] private bool _cooperativeJitterEnabled = true;
     [ObservableProperty] private bool _cooperativeMemberLoadingGuardEnabled = true;
@@ -108,6 +119,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnChartPredictionEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeEarlyStartEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeLifeFeedbackEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeWaitJitterFilterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnCooperativeJitterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
@@ -130,6 +142,17 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     public async Task RefreshAsync()
     {
         if (IsBusy) return;
+        // 显式刷新先等待自动保存完成，避免旧磁盘快照覆盖 pending 编辑。
+        if (_pendingRuntimeOptions != null || _pendingProfileSave != null)
+        {
+            _refreshPending = true;
+            StatusText = "正在保存当前修改，完成后刷新";
+            // 保存耗尽后保留的编辑由用户刷新重新驱动；已有 debounce 或确认中的保存不重复入队。
+            if (_pendingRuntimeOptions != null) _runtimeAutoSave.ScheduleIfIdle();
+            if (_pendingProfileSave != null) _profileAutoSave.ScheduleIfIdle();
+            return;
+        }
+        _refreshPending = false;
         // 本次读取失败后不允许把未完整加载的界面状态自动写回。
         _runtimeOptionsLoaded = false;
         _suspendAutoSave++;
@@ -223,6 +246,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
         ["native_life_feedback_enabled"] = NativeLifeFeedbackEnabled,
+        ["native_early_start_enabled"] = NativeEarlyStartEnabled,
         ["native_wait_jitter_filter_enabled"] = NativeWaitJitterFilterEnabled,
         ["cooperative_jitter_enabled"] = CooperativeJitterEnabled,
         ["cooperative_member_loading_guard_enabled"] = CooperativeMemberLoadingGuardEnabled,
@@ -267,6 +291,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         // 先校验整个实验选项组，失败时不能留下半组新值供自动保存。
         var life = Read(runtime, "native_life_feedback_enabled");
         var wait = Read(runtime, "native_wait_jitter_filter_enabled");
+        var early = Read(runtime, "native_early_start_enabled");
+        NativeEarlyStartEnabled = early;
         NativeLifeFeedbackEnabled = life;
         NativeWaitJitterFilterEnabled = wait;
     }
@@ -335,7 +361,9 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         {
             _saveGate.Release();
         }
+        if (JToken.DeepEquals(_pendingRuntimeOptions, options)) _pendingRuntimeOptions = null;
         StatusText = "演出运行设置已自动保存";
+        await RefreshAfterPendingSaveAsync();
     }
 
     private async Task SavePendingProfileAsync()
@@ -370,6 +398,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                     }
                 }
                 StatusText = "已取消修改，并恢复已验收 Profile 的原值";
+                await RefreshAfterPendingSaveAsync();
                 return;
             }
             _acceptedProfileEditConfirmed.Add(request.Filename);
@@ -389,11 +418,19 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         {
             _saveGate.Release();
         }
+        if (ReferenceEquals(_pendingProfileSave, request)) _pendingProfileSave = null;
         StatusText = request.Accepted
             ? "Profile 参数已自动保存；验收已撤销，需重新校准"
             : "Profile 参数已自动保存";
-        if (request.Accepted)
-            await RefreshAsync();
+        if (request.Accepted) _refreshPending = true;
+        await RefreshAfterPendingSaveAsync();
+    }
+
+    private Task RefreshAfterPendingSaveAsync()
+    {
+        // 同时等待两类 pending，尤其不能越过已验收 Profile 的确认门禁。
+        return _refreshPending && _pendingRuntimeOptions == null && _pendingProfileSave == null
+            ? RefreshAsync() : Task.CompletedTask;
     }
 
     private Task ReportAutoSaveFailureAsync(string scope, Exception exception)
@@ -517,11 +554,18 @@ public sealed class DebouncedAsyncAction : IDisposable
     }
 
     public void Schedule()
+        => Schedule(replacePending: true);
+
+    public void ScheduleIfIdle()
+        => Schedule(replacePending: false);
+
+    private void Schedule(bool replacePending)
     {
         CancellationTokenSource pending;
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!replacePending && _pending != null) return;
             _pending?.Cancel();
             _pending?.Dispose();
             pending = new CancellationTokenSource();

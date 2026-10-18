@@ -563,6 +563,29 @@ static void RuntimeOptionsIncludeProcessCleanupSwitch()
         "removed life protection options must not be persisted");
 }
 
+static async Task RefreshRetryDoesNotDuplicatePendingSaveAsync()
+{
+    var started = new TaskCompletionSource();
+    var release = new TaskCompletionSource();
+    var calls = 0;
+    using var action = new DebouncedAsyncAction(async () =>
+    {
+        Interlocked.Increment(ref calls);
+        started.TrySetResult();
+        await release.Task;
+    }, TimeSpan.FromMilliseconds(10));
+    action.Schedule();
+    // 等待期间和执行期间的刷新都不得重复保存或重复进入 Profile 确认。
+    for (var i = 0; i < 5; i++) action.ScheduleIfIdle();
+    await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    for (var i = 0; i < 5; i++) action.ScheduleIfIdle();
+    release.SetResult();
+    await Task.Delay(100);
+    Assert(calls == 1, "refresh duplicated pending or in-flight save");
+    action.ScheduleIfIdle();
+    await WaitUntilAsync(() => calls == 2, TimeSpan.FromSeconds(2));
+}
+
 static void NativeExperimentalOptionsKeepBooleanAndSaveBoundaries()
 {
     var type = typeof(PerformanceProfileSettingsUserControlModel);
@@ -572,28 +595,30 @@ static void NativeExperimentalOptionsKeepBooleanAndSaveBoundaries()
     var pending = type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
     var loaded = type.GetField("_runtimeOptionsLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!;
     load.Invoke(model, [new JObject()]);
-    Assert(!model.NativeLifeFeedbackEnabled && !model.NativeWaitJitterFilterEnabled,
+    Assert(!model.NativeLifeFeedbackEnabled && !model.NativeWaitJitterFilterEnabled && !model.NativeEarlyStartEnabled,
         "missing experiment options must default false");
+    foreach (var early in new[] { false, true })
     foreach (var life in new[] { false, true })
     foreach (var wait in new[] { false, true })
     {
         load.Invoke(model, [new JObject { ["native_life_feedback_enabled"] = life,
-            ["native_wait_jitter_filter_enabled"] = wait }]);
+            ["native_wait_jitter_filter_enabled"] = wait, ["native_early_start_enabled"] = early }]);
         model.NativeRealtimeEnabled = false;
         var snapshot = (JObject)capture.Invoke(model, null)!;
         Assert(snapshot.Value<bool>("native_life_feedback_enabled") == life
-            && snapshot.Value<bool>("native_wait_jitter_filter_enabled") == wait,
+            && snapshot.Value<bool>("native_wait_jitter_filter_enabled") == wait
+            && snapshot.Value<bool>("native_early_start_enabled") == early,
             "capture or disabling Native lost an experimental choice");
     }
     Assert(pending.GetValue(model) == null, "unloaded experiments must not auto-save defaults");
     try
     {
         load.Invoke(model, [new JObject { ["native_life_feedback_enabled"] = false,
-            ["native_wait_jitter_filter_enabled"] = "false" }]);
+            ["native_wait_jitter_filter_enabled"] = false, ["native_early_start_enabled"] = "false" }]);
         throw new InvalidOperationException("string experiment option was accepted");
     }
     catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
-    Assert(model.NativeLifeFeedbackEnabled && model.NativeWaitJitterFilterEnabled,
+    Assert(model.NativeLifeFeedbackEnabled && model.NativeWaitJitterFilterEnabled && model.NativeEarlyStartEnabled,
         "invalid load partially replaced the saved experiment choices");
     loaded.SetValue(model, true);
     model.SkipResultCheck = true;
@@ -667,12 +692,37 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
             ["artifact_paths"] = new JObject { ["profiles"] = root },
             ["chart_sync"] = new JObject { ["manifest_path"] = Path.Combine(root, "manifest.json") }
         }.ToString());
+        // 首次挂载失败后修复文件，另一个分类重新挂载应重试，而不是复用已结束的失败任务。
+        await File.WriteAllTextAsync(selectionPath, "broken first selection");
+        var firstReadFailed = new PerformanceProfileSettingsUserControlModel();
+        models.Add(firstReadFailed);
+        try { await firstReadFailed.EnsureLoadedAsync(); }
+        catch (InvalidOperationException) when (firstReadFailed.StatusText.StartsWith("Profile 管理器调用失败：")) { }
+        Assert(loadedField.GetValue(firstReadFailed) is false, "broken initial read opened auto-save gate");
+        firstReadFailed.NativeEarlyStartEnabled = true;
+        firstReadFailed.BestdoriAutoUpdateEnabled = false;
+        await Task.Delay(750);
+        Assert(await File.ReadAllTextAsync(selectionPath) == "broken first selection",
+            "broken initial read auto-saved UI defaults");
+        var repairedSelection = "{\"version\":1,\"pinned\":{},\"runtime_options\":{\"native_early_start_enabled\":true,\"bestdori_auto_update_interval_hours\":48}}";
+        await File.WriteAllTextAsync(selectionPath, repairedSelection);
+        var firstRetry = firstReadFailed.EnsureLoadedAsync();
+        var sharedRetry = firstReadFailed.EnsureLoadedAsync();
+        Assert(ReferenceEquals(firstRetry, sharedRetry), "concurrent category attachments did not share in-flight load");
+        try { await Task.WhenAll(firstRetry, sharedRetry); }
+        catch (InvalidOperationException) when (firstReadFailed.StatusText.StartsWith("Profile 管理器调用失败：")) { }
+        Assert(loadedField.GetValue(firstReadFailed) is true,
+            "reattachment after repaired first read reused completed failed load");
+        Assert(firstReadFailed.NativeEarlyStartEnabled && firstReadFailed.BestdoriAutoUpdateIntervalHours == 48,
+            "reattachment did not consume repaired runtime options");
+        Assert(await File.ReadAllTextAsync(selectionPath) == repairedSelection,
+            "successful reattachment wrote default options back");
         await File.WriteAllTextAsync(selectionPath,
             "{\"version\":1,\"pinned\":{},\"runtime_options\":{\"native_realtime_enabled\":false}}");
         var oldSelection = await File.ReadAllTextAsync(selectionPath);
         var model = new PerformanceProfileSettingsUserControlModel();
         models.Add(model);
-        await model.RefreshAsync();
+        await Task.WhenAll(model.EnsureLoadedAsync(), model.EnsureLoadedAsync());
         Assert(model.CooperativeMemberLoadingGuardEnabled, "old selection did not load guard as enabled");
         Assert(model.BestdoriAutoUpdateEnabled && model.BestdoriAutoUpdateIntervalHours == 24,
             "old selection did not migrate auto update defaults");
@@ -680,6 +730,14 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         model.CooperativeMemberLoadingGuardEnabled = false;
         model.NativeLifeFeedbackEnabled = true;
         model.NativeWaitJitterFilterEnabled = true;
+        model.NativeEarlyStartEnabled = true;
+        model.ChartPredictionEnabled = false;
+        model.ChartPredictPresses = false;
+        // 分类挂载和显式刷新均不得覆盖尚在 debounce 中的运行设置。
+        await model.EnsureLoadedAsync();
+        await model.RefreshAsync();
+        Assert(model.NativeEarlyStartEnabled && !model.ChartPredictionEnabled && !model.ChartPredictPresses,
+            "category attachment or refresh replaced pending edits");
         model.BestdoriAutoUpdateEnabled = false;
         model.BestdoriAutoUpdateIntervalHours = 72;
         await WaitUntilAsync(() => JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
@@ -689,10 +747,31 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         await reloaded.RefreshAsync();
         Assert(!reloaded.CooperativeMemberLoadingGuardEnabled, "saved false did not survive refresh");
         Assert(!reloaded.NativeRealtimeEnabled, "guard must be independent of native input switch");
-        Assert(reloaded.NativeLifeFeedbackEnabled && reloaded.NativeWaitJitterFilterEnabled,
+        Assert(reloaded.NativeLifeFeedbackEnabled && reloaded.NativeWaitJitterFilterEnabled && reloaded.NativeEarlyStartEnabled,
             "experimental Native settings did not persist through real manager");
+        Assert(!reloaded.ChartPredictionEnabled && !reloaded.ChartPredictPresses,
+            "Legacy false choices were lost when saving Native or chart update settings");
         Assert(!reloaded.BestdoriAutoUpdateEnabled && reloaded.BestdoriAutoUpdateIntervalHours == 72,
             "disabled auto update/custom interval did not persist through real manager");
+        // 管理器暂时无法读取配置：保存重试耗尽后仍保留编辑，由用户刷新触发有限重试。
+        var beforeSaveFailure = await File.ReadAllTextAsync(selectionPath);
+        await File.WriteAllTextAsync(selectionPath, "temporarily broken for save");
+        reloaded.BestdoriAutoUpdateIntervalHours = 73;
+        var saveAction = (DebouncedAsyncAction)autoSaveField.GetValue(reloaded)!;
+        var debouncePending = typeof(DebouncedAsyncAction).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await WaitUntilAsync(() => reloaded.StatusText.Contains("自动保存失败")
+            && debouncePending.GetValue(saveAction) == null, TimeSpan.FromSeconds(5));
+        Assert(type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(reloaded) != null,
+            "failed save discarded pending edits");
+        Assert(await File.ReadAllTextAsync(selectionPath) == "temporarily broken for save",
+            "failed save replaced invalid file");
+        await File.WriteAllTextAsync(selectionPath, beforeSaveFailure);
+        await reloaded.RefreshAsync();
+        await WaitUntilAsync(() => JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
+            .Value<int?>("bestdori_auto_update_interval_hours") == 73
+            && reloaded.StatusText.StartsWith("共 "), TimeSpan.FromSeconds(5));
+        Assert(loadedField.GetValue(reloaded) is true && reloaded.BestdoriAutoUpdateIntervalHours == 73,
+            "user refresh did not persist pending edits and reload after service recovery");
         reloaded.SkipResultCheck = true;
         await WaitUntilAsync(() => JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
             .Value<bool?>("skip_result_check") == true, TimeSpan.FromSeconds(5));
@@ -700,6 +779,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
             .Value<bool?>("cooperative_member_loading_guard_enabled") == false, "other option save lost false");
         Assert(JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
             .Value<bool?>("native_life_feedback_enabled") == true, "other option save lost experiment");
+        await WaitUntilAsync(() => type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(reloaded) == null, TimeSpan.FromSeconds(5));
         ((DebouncedAsyncAction)autoSaveField.GetValue(reloaded)!).Cancel();
         await File.WriteAllTextAsync(selectionPath, "broken selection");
         try { await reloaded.RefreshAsync(); }
@@ -714,6 +794,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         reloaded.SkipResultCheck = false;
         reloaded.NativeLifeFeedbackEnabled = false;
         reloaded.NativeWaitJitterFilterEnabled = false;
+        reloaded.NativeEarlyStartEnabled = false;
         await Task.Delay(750);
         Assert(await File.ReadAllTextAsync(selectionPath) == "broken selection", "failed read overwrote file with defaults");
         Console.WriteLine("Cooperative guard profile-manager persistence tests passed: " + root);
@@ -1386,6 +1467,7 @@ await SerializesChangesArrivingDuringSaveAsync();
 await RetriesOnceAsync();
 await ReportsTerminalFailureAfterRetryAsync();
 await CancelPreventsPendingSaveAsync();
+await RefreshRetryDoesNotDuplicatePendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
 LiveBoostTargetPreservesDefaultsZeroAndAutoSaveBoundary();
 NativeExperimentalOptionsKeepBooleanAndSaveBoundaries();
