@@ -9,9 +9,11 @@ public partial class PerformanceProfileSettingsUserControl : UserControl
     public PerformanceProfileSettingsUserControl()
     {
         InitializeComponent();
-        var model = new PerformanceProfileSettingsUserControlModel();
-        DataContext = model;
-        AttachedToVisualTree += (_, _) => _ = model.RefreshAsync();
+        AttachedToVisualTree += (_, _) =>
+        {
+            if (DataContext is PerformanceProfileSettingsUserControlModel model)
+                _ = model.EnsureLoadedAsync();
+        };
     }
 
     private async void ProfilesGrid_OnDoubleTapped(object? sender, TappedEventArgs e)

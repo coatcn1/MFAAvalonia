@@ -1,4 +1,4 @@
-﻿using Avalonia.Collections;
+using Avalonia.Collections;
 using Avalonia.Styling;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -21,6 +21,8 @@ namespace MFAAvalonia.ViewModels.Pages;
 
 public partial class SettingsViewModel : ViewModelBase
 {
+    // 演出设置和谱面更新必须共用完整 runtime_options 的唯一保存所有者。
+    public MFAAvalonia.ViewModels.UsersControls.Settings.PerformanceProfileSettingsUserControlModel PerformanceSettings { get; } = new();
     private bool _hotkeysInitialized;
     private bool _syncingCurrentConfiguration;
 
