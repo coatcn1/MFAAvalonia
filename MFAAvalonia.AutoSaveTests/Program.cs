@@ -1338,6 +1338,7 @@ if (args.Contains("--power-lifecycle"))
 }
 
 AdbEndpointGuardDefaultsToEnabledAndHonoursExplicitDisable();
+await AdbRouteReconnectTests.RunAsync();
 AdbEndpointGuardRejectsDeclaredLdWithInvalidProcessIdentity();
 AdbEndpointGuardKeepsSnapshotAndRetryBoundToTheMainRoute();
 AdbEndpointGuardKeepsLdInputOnSelectedProcess();

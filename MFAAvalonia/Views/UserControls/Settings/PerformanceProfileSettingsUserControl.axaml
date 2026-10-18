@@ -138,7 +138,7 @@
                             IsChecked="{Binding NativeLifeFeedbackEnabled, Mode=TwoWay}" />
               <TextBlock Text="Native 判定反馈微调（实验）" VerticalAlignment="Center" />
             </DockPanel>
-            <TextBlock Text="默认关闭；Native 正式演奏每 3 秒以 20Hz 采样 0.8 秒，12 秒内三个可信同向窗口建立趋势，确认生效后按新反馈继续微调。不依赖掉血；排练、校准和 Legacy 不使用。"
+            <TextBlock Text="默认关闭；Native 正式演奏约 5Hz 观测，判定候选最多加密 20Hz / 0.8 秒。一秒内两次独立同向字样请求 ±15ms，未来输入累计限 ±200ms；持续字样只计一次，生效后需可信空白与新字样才能续调。不依赖掉血；排练、校准和 Legacy 不使用，候选仍待真机验收。"
                        TextWrapping="Wrap" Opacity="0.75" />
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
