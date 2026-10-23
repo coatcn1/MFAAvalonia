@@ -13,6 +13,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -435,6 +436,8 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
 
     private Task ReportAutoSaveFailureAsync(string scope, Exception exception)
     {
+        using var logScope = LoggerHelper.PushContext(source: "PerformanceSettings", operation: "AutoSave");
+        LoggerHelper.Error($"{scope}自动保存失败（已重试一次）", exception);
         StatusText = $"{scope}自动保存失败（已重试一次）：{exception.Message}";
         Instances.ToastManager.CreateToast()
             .WithTitle("演出设置")
@@ -513,13 +516,16 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["profile"] = filename
     };
 
-    private async Task<bool> RunAsync(Func<Task> action)
+    private async Task<bool> RunAsync(Func<Task> action,
+        [System.Runtime.CompilerServices.CallerMemberName] string operation = "")
     {
         if (IsBusy) return false;
         IsBusy = true;
         try { await action(); return true; }
         catch (Exception ex)
         {
+            using var logScope = LoggerHelper.PushContext(source: "PerformanceSettings", operation: operation);
+            LoggerHelper.Error("演出设置操作失败", ex);
             StatusText = $"Profile 管理器调用失败：{ex.Message}";
             Instances.ToastManager.CreateToast().WithTitle("演出设置").WithContent(StatusText).OfType(NotificationType.Error).Dismiss().After(TimeSpan.FromSeconds(8)).Queue();
             return false;
@@ -740,6 +746,8 @@ public sealed class PerformanceProfileItem
 
 internal static class ProfileManagerClient
 {
+    // 管道协议与 Windows 控制台代码页无关；无 BOM 避免污染 Python 输入，严格解码保留真实坏字节错误。
+    private static readonly Encoding PipeEncoding = new UTF8Encoding(false, true);
     public static async Task<JObject?> LoadCacheArtifactPathsAsync()
     {
         if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "profile-manager.json"))) return null;
@@ -834,6 +842,9 @@ internal static class ProfileManagerClient
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // 谱面进度属于人类日志，坏字节不应中止排空或引入 RPC 的严格解析语义。
+            StandardOutputEncoding = new UTF8Encoding(false),
+            StandardErrorEncoding = new UTF8Encoding(false),
             CreateNoWindow = true,
             WorkingDirectory = sync.Value<string>("working_directory") ?? AppContext.BaseDirectory
         };
@@ -883,9 +894,13 @@ internal static class ProfileManagerClient
         var startInfo = new ProcessStartInfo(config.Value<string>("child_exec") ?? throw new InvalidDataException("缺少 child_exec"))
         {
             UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, CreateNoWindow = true, WorkingDirectory = AppContext.BaseDirectory
+            RedirectStandardError = true, CreateNoWindow = true, WorkingDirectory = AppContext.BaseDirectory,
+            StandardInputEncoding = PipeEncoding,
+            StandardOutputEncoding = PipeEncoding,
+            StandardErrorEncoding = PipeEncoding
         };
         foreach (var arg in config["child_args"]?.Values<string>() ?? []) startInfo.ArgumentList.Add(arg);
+        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
         var environment = (JObject?)config["environment"];
         if (request.Value<string>("operation") == "list" && environment != null)
         {
@@ -901,11 +916,18 @@ internal static class ProfileManagerClient
         var process = child.Process;
         await process.StandardInput.WriteAsync(request.ToString(Formatting.None)).ConfigureAwait(false);
         process.StandardInput.Close();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
         try
         {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            // 解码失败会停止排空管道；必须同时观察读取和退出，及时终止仍在写入的子进程。
+            var pending = new List<Task> { process.WaitForExitAsync(timeout.Token), stdoutTask, stderrTask };
+            while (pending.Count > 0)
+            {
+                var completed = await Task.WhenAny(pending).ConfigureAwait(false);
+                await completed.ConfigureAwait(false);
+                pending.Remove(completed);
+            }
             timeout.Token.ThrowIfCancellationRequested();
             BestdoriUpdateService.Shared.ShutdownToken.ThrowIfCancellationRequested();
         }
@@ -913,6 +935,9 @@ internal static class ProfileManagerClient
         {
             if (!process.HasExited) process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync().ConfigureAwait(false);
+            // 清理后观察两条读取任务，保留最初的解码、停止或超时原因。
+            try { await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false); }
+            catch { }
             throw;
         }
         var stdout = await stdoutTask.ConfigureAwait(false);
