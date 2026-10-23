@@ -2,6 +2,7 @@ using Avalonia;
 using MFAAvalonia.ViewModels.UsersControls.Settings;
 using MFAAvalonia.Helper;
 using Newtonsoft.Json.Linq;
+using System.Diagnostics;
 using System.Reflection;
 using System.Net;
 using System.Net.Sockets;
@@ -663,6 +664,130 @@ static void CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary()
     // 只验证队列捕获，避免单元测试触发部署目录的真实持久化。
     var autoSave = type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!;
     ((DebouncedAsyncAction)autoSave.GetValue(model)!).Cancel();
+}
+
+static async Task ProfileManagerPipeUsesUtf8IndependentlyOfConsoleAsync()
+{
+    var python = Environment.GetEnvironmentVariable("MAABANGDREAM_TEST_PYTHON");
+    var projectRoot = Environment.GetEnvironmentVariable("MAABANGDREAM_TEST_PROJECT_ROOT");
+    if (string.IsNullOrEmpty(python) || string.IsNullOrEmpty(projectRoot)) return;
+    var root = Path.Combine(projectRoot, ".local", "mfa-profile-pipe-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var scriptPath = Path.Combine(root, "pipe_fixture.py");
+    var configPath = Path.Combine(AppContext.BaseDirectory, "profile-manager.json");
+    var originalConfig = File.Exists(configPath) ? await File.ReadAllBytesAsync(configPath) : null;
+    var originalOutput = Console.OutputEncoding;
+    var originalPythonIo = Environment.GetEnvironmentVariable("PYTHONIOENCODING");
+    var originalPythonUtf8 = Environment.GetEnvironmentVariable("PYTHONUTF8");
+    const string text = "天下トーイツAtoZ☆ 中文 \"引号\" \\路径";
+    try
+    {
+        // 走真实子进程和 JSON 管道；独立固定父控制台与继承环境，避免测试宿主的 UTF-8 掩盖缺陷。
+        await File.WriteAllTextAsync(scriptPath, """
+            import json
+            import os
+            import sys
+            import time
+            request = json.load(sys.stdin)
+            if request.get("operation") in ("blocked-stdout", "blocked-stderr"):
+                with open(request["pid_path"], "w", encoding="utf-8") as pid_file:
+                    pid_file.write(str(os.getpid()))
+                stream = sys.stdout if request["operation"] == "blocked-stdout" else sys.stderr
+                stream.buffer.write(b"\xff" + b"x" * (1024 * 1024))
+                stream.buffer.flush()
+                time.sleep(60)
+                raise SystemExit(0)
+            if request.get("operation") == "invalid-utf8":
+                sys.stdout.buffer.write(b"\xff")
+                raise SystemExit(0)
+            if request.get("operation") == "stderr":
+                sys.stderr.write(request["text"])
+                print(json.dumps({"ok": False}, ensure_ascii=False))
+                raise SystemExit(1)
+            response = {"ok": True, "result": {
+                "game_terminal_reason": "☆", "cancelled_pending_commands": 0,
+                "text": request["text"], "stdin_encoding": sys.stdin.encoding,
+                "stdout_encoding": sys.stdout.encoding, "stderr_encoding": sys.stderr.encoding}}
+            payload = json.dumps(response, ensure_ascii=False)
+            if request.get("operation") == "utf8-output":
+                sys.stdout.buffer.write(payload.encode("utf-8"))
+            else:
+                sys.stdout.write(payload)
+            """, new UTF8Encoding(false));
+        await File.WriteAllTextAsync(configPath, new JObject
+        {
+            ["child_exec"] = python,
+            ["child_args"] = new JArray("-B", scriptPath)
+        }.ToString());
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        foreach (var parentEncoding in new[] { Encoding.GetEncoding(936), new UTF8Encoding(false) })
+        foreach (var inheritedPythonIo in new[] { "cp936", "utf-8" })
+        {
+            Console.OutputEncoding = parentEncoding;
+            Environment.SetEnvironmentVariable("PYTHONIOENCODING", inheritedPythonIo);
+            Environment.SetEnvironmentVariable("PYTHONUTF8", "0");
+            foreach (var operation in new[] { "utf8-output", "ordinary-output" })
+            {
+                var requestText = operation == "utf8-output" ? "ascii probe" : text;
+                var result = await ProfileManagerClient.InvokeAsync(new JObject
+                {
+                    ["operation"] = operation,
+                    ["text"] = requestText
+                });
+                Assert(result.Value<string>("game_terminal_reason") == "☆"
+                    && result.Value<int>("cancelled_pending_commands") == 0,
+                    "response decoding consumed the closing JSON quote after a UTF-8 star");
+                Assert(result.Value<string>("text") == requestText, "UTF-8 request/response text changed");
+                foreach (var stream in new[] { "stdin_encoding", "stdout_encoding", "stderr_encoding" })
+                    Assert(result.Value<string>(stream)?.Replace("-", "").ToLowerInvariant() == "utf8",
+                        $"Python {stream} inherited a system encoding");
+            }
+            try
+            {
+                await ProfileManagerClient.InvokeAsync(new JObject { ["operation"] = "stderr", ["text"] = text });
+                throw new InvalidOperationException("failed child process was accepted");
+            }
+            catch (InvalidOperationException ex) when (ex.Message == text) { }
+        }
+        try
+        {
+            await ProfileManagerClient.InvokeAsync(new JObject { ["operation"] = "invalid-utf8" });
+            throw new InvalidOperationException("invalid UTF-8 child output was accepted");
+        }
+        catch (DecoderFallbackException) { }
+        foreach (var operation in new[] { "blocked-stdout", "blocked-stderr" })
+        {
+            var pidPath = Path.Combine(root, operation + ".pid");
+            var elapsed = Stopwatch.StartNew();
+            try
+            {
+                await ProfileManagerClient.InvokeAsync(new JObject
+                {
+                    ["operation"] = operation,
+                    ["pid_path"] = pidPath
+                });
+                throw new InvalidOperationException("invalid UTF-8 writer was accepted");
+            }
+            catch (DecoderFallbackException) { }
+            Assert(elapsed.Elapsed < TimeSpan.FromSeconds(5), "decoder failure waited for the process timeout");
+            var pid = int.Parse(await File.ReadAllTextAsync(pidPath));
+            try
+            {
+                using var child = Process.GetProcessById(pid);
+                Assert(child.HasExited, "decoder failure left the pipe writer running");
+            }
+            catch (ArgumentException) { }
+        }
+    }
+    finally
+    {
+        Console.OutputEncoding = originalOutput;
+        Environment.SetEnvironmentVariable("PYTHONIOENCODING", originalPythonIo);
+        Environment.SetEnvironmentVariable("PYTHONUTF8", originalPythonUtf8);
+        if (originalConfig != null) await File.WriteAllBytesAsync(configPath, originalConfig);
+        else File.Delete(configPath);
+    }
+    Console.WriteLine("Profile manager real UTF-8 pipe matrix passed: " + root);
 }
 
 static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
@@ -1472,6 +1597,7 @@ RuntimeOptionsIncludeProcessCleanupSwitch();
 LiveBoostTargetPreservesDefaultsZeroAndAutoSaveBoundary();
 NativeExperimentalOptionsKeepBooleanAndSaveBoundaries();
 CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary();
+await ProfileManagerPipeUsesUtf8IndependentlyOfConsoleAsync();
 await CooperativeLoadingGuardPersistsThroughProfileManagerAsync();
 ProfileCurrentSelectionMarkerIsIndependentFromGridSelection();
 ProfileSelectionRequestUsesTaskDifficulty();
