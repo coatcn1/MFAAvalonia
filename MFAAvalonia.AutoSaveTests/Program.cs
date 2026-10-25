@@ -1555,6 +1555,14 @@ static async Task GitHubWebFallbackRequiresExactShaSidecarAsync()
     }
 }
 
+if (args.Contains("--live-stop-confirmation"))
+{
+    AppBuilder.Configure<Application>().UseWin32().UseSkia().SetupWithoutStarting();
+    await LiveStopConfirmationTests.RunAsync();
+    Console.WriteLine("Live stop confirmation tests passed (protocol, lifecycle, command races, default/cancel buttons)");
+    return;
+}
+
 if (args.Contains("--power-lifecycle"))
 {
     if (!OperatingSystem.IsWindows())

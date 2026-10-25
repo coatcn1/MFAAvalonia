@@ -126,7 +126,7 @@ public partial class TaskQueueViewModel : ViewModelBase
     {
         DispatcherHelper.RunOnMainThread(() =>
         {
-            IsRunning = e.NewValue > 0;
+            IsRunning = e.NewValue > 0 || Processor.IsTaskExecutionActive;
         });
     }
 
@@ -443,6 +443,21 @@ public partial class TaskQueueViewModel : ViewModelBase
             StopTask();
         else
             StartTask();
+    }
+
+    private readonly LiveStopConfirmationCoordinator _buttonStopConfirmation = new();
+
+    [RelayCommand]
+    private async Task ToggleFromButtonAsync()
+    {
+        if (!IsRunning && !Processor.IsTaskExecutionActive && Processor.LivePerformance.Capture() == null)
+        {
+            StartTask();
+            return;
+        }
+        await _buttonStopConfirmation.RequestAsync(Processor.LivePerformance,
+            LiveStopConfirmationDialog.ShowAsync, Processor.StopFromButton,
+            ex => LoggerHelper.Warning($"演出停止确认窗口未完成，继续当前任务：{ex.Message}"));
     }
 
     public void StartTask()

@@ -49,8 +49,10 @@ public class MaaProcessor
     private string? _activeAdbSerial;
     private readonly AdbRouteReconnectCoordinator _adbRouteReconnect = new();
     private long _mainTaskerGeneration;
+    public LivePerformanceState LivePerformance { get; } = new();
     private readonly object _mainTaskerStateLock = new();
     private int _routineActive;
+    public bool IsTaskExecutionActive => Volatile.Read(ref _routineActive) > 0;
     private int _routineInputStarted;
     private readonly BlockingCollection<Func<Task>> _commandQueue = new();
     private readonly object _commandThreadLock = new();
@@ -673,6 +675,7 @@ public class MaaProcessor
     public MaaTasker? ScreenshotTasker => _screenshotTasker;
     public void SetTasker(MaaTasker? maaTasker = null)
     {
+        LivePerformance.Reset();
         ResetActionFailedCount();
         MaaTasker? oldTasker;
         lock (_mainTaskerStateLock)
@@ -1768,6 +1771,7 @@ public class MaaProcessor
             tasker = t;
         if (sender is MaaContext context)
             tasker = context.Tasker;
+        LivePerformance.ObserveCallback(tasker, args.Message, jObject);
         if (tasker != null && Instances.GameSettingsUserControlModel.ShowHitDraw)
         {
             var name = jObject["name"]?.ToString() ?? string.Empty;
@@ -3026,6 +3030,7 @@ public class MaaProcessor
             ResetActionFailedCount();
             Interlocked.Exchange(ref _stopCompletionMessageHandled, 0);
             Status = MFATask.MFATaskStatus.NOT_STARTED;
+            LivePerformance.BeginRun();
             CancellationTokenSource = new CancellationTokenSource();
 
             _startTime = DateTime.Now;
@@ -3062,6 +3067,10 @@ public class MaaProcessor
         finally
         {
             Interlocked.Decrement(ref _routineActive);
+            DispatcherHelper.PostOnMainThread(() =>
+            {
+                if (ViewModel != null) ViewModel.IsRunning = TaskQueue.Count > 0 || IsTaskExecutionActive;
+            });
         }
     }
 
@@ -3815,23 +3824,30 @@ public class MaaProcessor
     {
         if (maa == null || task == null) return;
 
-        var job = _adbRouteReconnect.ReadSnapshot(() =>
+        var performanceGeneration = LivePerformance.BeginTask(maa);
+        try
         {
-            token.ThrowIfCancellationRequested();
-            if (ViewModel?.CurrentController == MaaControllerTypes.Adb)
-                EnsureActiveAdbRoute();
-            if (!ReferenceEquals(maa, MaaTasker))
-                throw new AdbTargetMismatchException("主控制器已重建，已阻止向旧任务执行器派发任务。");
-            Interlocked.Exchange(ref _routineInputStarted, 1);
-            return maa.AppendTask(task, param ?? "{}");
-        }, token);
-        await TaskManager.RunTaskAsync((Action)(() =>
-        {
-            if (InstanceConfiguration.GetValue(ConfigurationKeys.ContinueRunningWhenError, true))
-                job.Wait();
-            else
-                job.Wait().ThrowIfNot(MaaJobStatus.Succeeded);
-        }), token, (ex) => throw ex, name: "队列任务", catchException: true, shouldLog: false);
+            var job = _adbRouteReconnect.ReadSnapshot(() =>
+            {
+                token.ThrowIfCancellationRequested();
+                if (ViewModel?.CurrentController == MaaControllerTypes.Adb)
+                    EnsureActiveAdbRoute();
+                if (!ReferenceEquals(maa, MaaTasker))
+                    throw new AdbTargetMismatchException("主控制器已重建，已阻止向旧任务执行器派发任务。");
+                Interlocked.Exchange(ref _routineInputStarted, 1);
+                return LivePerformance.PostTaskIfCurrent(performanceGeneration,
+                    () => maa.AppendTask(task, param ?? "{}"));
+            }, token);
+            LivePerformance.BindTask(performanceGeneration, job.Id);
+            await TaskManager.RunTaskAsync((Action)(() =>
+            {
+                if (InstanceConfiguration.GetValue(ConfigurationKeys.ContinueRunningWhenError, true))
+                    job.Wait();
+                else
+                    job.Wait().ThrowIfNot(MaaJobStatus.Succeeded);
+            }), token, (ex) => throw ex, name: "队列任务", catchException: true, shouldLog: false);
+        }
+        finally { LivePerformance.EndTask(performanceGeneration); }
     }
 
     async private Task RunScript(string str = "Prescript")
@@ -3919,8 +3935,22 @@ public class MaaProcessor
         EnqueueCommand(() => StopInternal(status, finished, onlyStart, action));
     }
 
+    public void StopFromButton(LiveTaskSnapshot? snapshot)
+    {
+        EnqueueCommand(() =>
+        {
+            if (snapshot == null)
+                return StopInternal(MFATask.MFATaskStatus.STOPPED, false, false, null);
+            // 排队期间可能已换任务；锁内只取得停止权，原停止路径须在锁外执行。
+            return LivePerformance.TryClaimStop(snapshot.Value)
+                ? StopInternal(MFATask.MFATaskStatus.STOPPED, false, false, null)
+                : Task.CompletedTask;
+        });
+    }
+
     private Task StopInternal(MFATask.MFATaskStatus status, bool finished, bool onlyStart, Action? action)
     {
+        LivePerformance.Reset();
         using var logScope = BeginInstanceLogScope("StopTask", "Worker");
         ResetActionFailedCount();
         ClearTaskbarProgress();
