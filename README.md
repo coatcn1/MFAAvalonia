@@ -354,3 +354,9 @@ MFAAvalonia -c 配置名称
 任务界面的停止按钮在实时演奏器运行（含等待首音）或自动演出开始后要求确认，默认继续演出；取消、Esc、默认 Enter 和关闭窗口均保持任务运行。明确停止才调用原停止/触点释放路径。选曲与结算直接停止；全局热键、内部异常、定时和关闭流程维持原入口。状态按 Agent 来源、任务 ID 与任务代次隔离，重复点击只开一个窗口，迟到确认不能停止后续任务。候选尚待界面及真实演出验收。
 
 定向离线测试：`dotnet run --project MFAAvalonia.AutoSaveTests -- --live-stop-confirmation`（Win32/Skia，使用不可见测试窗口，不连接设备）。
+
+### MaaBanGDream：Agent 体力会话身份（2026-10-24）
+
+每个 MFA 进程生成独立的体力账本会话身份，所有实例、Agent 和重连共用该身份；启动子进程时显式覆盖继承的旧值，直接运行 EXE 也能提供可信会话。消费未决保护及补充预算由 Python Agent 保持。
+
+离线验证：`dotnet run --project MFAAvalonia.AutoSaveTests -- --stamina-session`，覆盖进程隔离、环境覆盖和真实子进程继承；这不代替实际体力补充验收。
