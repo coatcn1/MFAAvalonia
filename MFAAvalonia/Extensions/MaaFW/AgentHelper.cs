@@ -30,6 +30,8 @@ namespace MFAAvalonia.Extensions.MaaFW;
 public class AgentContext
 {
     public MaaAgentClient? Client { get; set; }
+    public LivePerformanceState? PerformanceState { get; set; }
+    public object? PerformanceSource { get; set; }
     public Process? Process { get; set; }
     public CancellationTokenSource? ReadCancellationTokenSource { get; set; }
     public readonly Lock ReadLock = new();
@@ -215,8 +217,13 @@ public static class AgentHelper
                 LoggerHelper.Error("Agent 启动失败。");
             else
             {
+                var agentProcess = ctx.Process;
+                var performanceSource = processor.LivePerformance.RegisterAgent(tasker);
+                ctx.PerformanceState = processor.LivePerformance;
+                ctx.PerformanceSource = performanceSource;
                 ctx.Process.Exited += (_, _) =>
                 {
+                    processor.LivePerformance.UnregisterAgent(performanceSource);
                     LoggerHelper.Info("Agent 进程已退出。");
                     StopReadStreams(ctx);
                     ctx.Process = null;
@@ -225,12 +232,17 @@ public static class AgentHelper
                 BindProcessLifetime(ctx);
 
                 var readToken = ResetReadCancellation(ctx).Token;
-                TaskManager.RunTaskAsync(() => ReadProcessStreamAsync(ctx.Process.StandardOutput.BaseStream,
-                    line => HandleOutputLine(line, processor, "Stdout"), readToken), token: readToken, noMessage: true);
-                TaskManager.RunTaskAsync(() => ReadProcessStreamAsync(ctx.Process.StandardError.BaseStream,
+                TaskManager.RunTaskAsync(() => ReadProcessStreamAsync(agentProcess.StandardOutput.BaseStream,
+                    line => HandleOutputLine(line, processor, "Stdout", performanceSource), readToken), token: readToken, noMessage: true);
+                TaskManager.RunTaskAsync(() => ReadProcessStreamAsync(agentProcess.StandardError.BaseStream,
                     line => HandleOutputLine(line, processor, "StdErr"), readToken), token: readToken, noMessage: true);
 
-                TaskManager.RunTaskAsync(async () => await ctx.Process.WaitForExitAsync(token), token: token, name: "Agent程序启动");
+                TaskManager.RunTaskAsync(async () =>
+                {
+                    // Agent 可跨任务复用；单次任务取消不能注销仍存活的来源。
+                    try { await agentProcess.WaitForExitAsync(CancellationToken.None); }
+                    finally { processor.LivePerformance.UnregisterAgent(performanceSource); }
+                }, token: CancellationToken.None, name: "Agent程序启动");
             }
             return ctx.Process;
         };
@@ -537,6 +549,9 @@ public static class AgentHelper
     /// </summary>
     public static void KillSingleAgent(AgentContext ctx, MaaTasker? taskerToDispose = null)
     {
+        if (ctx.PerformanceSource is { } performanceSource)
+            ctx.PerformanceState?.UnregisterAgent(performanceSource);
+        ctx.PerformanceSource = null;
         var agentClient = ctx.Client;
         var agentProcess = ctx.Process;
 
@@ -662,9 +677,10 @@ public static class AgentHelper
         }
     }
 
-    private static void HandleOutputLine(string? line, MaaProcessor processor, string streamKind)
+    private static void HandleOutputLine(string? line, MaaProcessor processor, string streamKind, object? performanceSource = null)
     {
         if (string.IsNullOrEmpty(line)) return;
+        if (performanceSource != null && processor.LivePerformance.ConsumeAgentLine(performanceSource, line)) return;
 
         var outData = line;
         try { outData = Regex.Replace(outData, @"\x1B\[[0-9;]*[a-zA-Z]", ""); }

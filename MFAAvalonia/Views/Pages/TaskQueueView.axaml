@@ -626,7 +626,7 @@
                                 </Border>
                                 <Button Classes="Flat Rounded"
                                         IsEnabled="{Binding ToggleEnable}"
-                                        Command="{Binding ToggleCommand}"
+                                        Command="{Binding ToggleFromButtonCommand}"
                                         Padding="0,0"
                                         CornerRadius="999"
                                         Background="Transparent"
@@ -766,7 +766,7 @@
                                 </Border>
                                 <Button Classes="Flat Rounded"
                                         IsEnabled="{Binding ToggleEnable}"
-                                        Command="{Binding ToggleCommand}"
+                                        Command="{Binding ToggleFromButtonCommand}"
                                         Padding="0,0"
                                         CornerRadius="999"
                                         Background="Transparent"
@@ -1142,7 +1142,7 @@
                         </Button>
                         <Button Classes="BasicTight PlayStopButton"
                                 IsEnabled="{Binding ToggleEnable}"
-                                Command="{Binding ToggleCommand}"
+                                Command="{Binding ToggleFromButtonCommand}"
                                 FontWeight="DemiBold"
                                 Height="28"
                                 Width="28"
