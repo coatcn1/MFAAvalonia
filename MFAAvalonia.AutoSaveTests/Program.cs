@@ -1563,6 +1563,19 @@ if (args.Contains("--live-stop-confirmation"))
     return;
 }
 
+if (args.Contains("--stamina-session-child"))
+{
+    StaminaSessionTests.WriteChildReport();
+    return;
+}
+
+if (args.Contains("--stamina-session"))
+{
+    await StaminaSessionTests.RunAsync();
+    Console.WriteLine("Stamina MFA process session tests passed (direct startup, inherited values, real child environments, process isolation)");
+    return;
+}
+
 if (args.Contains("--power-lifecycle"))
 {
     if (!OperatingSystem.IsWindows())

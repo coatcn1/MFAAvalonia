@@ -205,6 +205,7 @@ public static class AgentHelper
             MaaProcessorManager.Instance.GetInstanceName(processor.InstanceId) ?? string.Empty;
         ApplyChildProcessEncodingEnvironmentVariables(startInfo, isPythonProcess);
         ApplyPiEnvironmentVariables(startInfo, processor);
+        MaaBanGDreamAgentSession.Apply(startInfo);
 
         LoggerHelper.Info(
             $"Agent 启动命令：{program} {(shouldAddUnbufferedFlag ? "-u " : "")}{string.Join(" ", replacedArgs)} {ctx.Client.Id} "
