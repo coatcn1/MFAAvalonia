@@ -153,10 +153,28 @@
             </DockPanel>
             <TextBlock Text="默认关闭；过滤偶发等待延迟尖峰。本局准备时冻结实验开关，下局生效；关闭 Native 仍保留选择。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
+              <ToggleSwitch IsEnabled="{Binding NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding NativeRandomGreatEnabled, Mode=TwoWay}"/>
+              <TextBlock Text="Native 随机 GREAT（实验）" VerticalAlignment="Center"/>
+            </DockPanel>
+            <TextBlock Text="默认关闭，下局生效。仅正式 Native 独立普通 TAP；整曲判定数乘目标比例，安全候选不足时保留缺额。FAST/SLOW 尽量各半；不改首末组、双押、FLICK、HOLD/Slide。" TextWrapping="Wrap" Opacity="0.75"/>
+            <Grid ColumnDefinitions="Auto,100,20,Auto,100" RowDefinitions="Auto,Auto,Auto" RowSpacing="8" ColumnSpacing="10" IsEnabled="{Binding NativeRealtimeEnabled}">
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="基础比例（%）" VerticalAlignment="Center"/>
+              <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding NativeRandomGreatBasePercent, Mode=TwoWay}" Minimum="0" Maximum="20" Increment="0.1" FormatString="F1"/>
+              <TextBlock Grid.Row="0" Grid.Column="3" Text="起始等级" VerticalAlignment="Center"/>
+              <NumericUpDown Grid.Row="0" Grid.Column="4" Value="{Binding NativeRandomGreatLevelStart, Mode=TwoWay}" Minimum="1" Maximum="40" Increment="1"/>
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="每级增量（%）" VerticalAlignment="Center"/>
+              <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding NativeRandomGreatPerLevelPercent, Mode=TwoWay}" Minimum="0" Maximum="20" Increment="0.1" FormatString="F1"/>
+              <TextBlock Grid.Row="1" Grid.Column="3" Text="比例上限（%）" VerticalAlignment="Center"/>
+              <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding NativeRandomGreatMaxPercent, Mode=TwoWay}" Minimum="0" Maximum="20" Increment="0.1" FormatString="F1"/>
+              <TextBlock Grid.Row="2" Grid.Column="0" Text="偏移幅度（ms）" VerticalAlignment="Center"/>
+              <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding NativeRandomGreatOffsetMs, Mode=TwoWay}" Minimum="35" Maximum="60" Increment="1"/>
+            </Grid>
+            <TextBlock Text="默认等级≤26 为 2%，27 为 3%，28 为 4%，以后每级加 1%，最高 10%。幅度尚待真机校准，计划偏移不保证实际 GREAT，可能出现其他判定；排练、校准和 Legacy 不使用。本局启用后暂停判定相位纠偏，保留生命/终点监控，协力/竞演不叠加漏键抖动。" TextWrapping="Wrap" Opacity="0.75"/>
+            <DockPanel>
               <ToggleSwitch IsEnabled="{Binding NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding CooperativeJitterEnabled, Mode=TwoWay}"/>
               <TextBlock Text="协力演出漏键抖动（避免连续全 PERFECT 被判异常）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="仅 Native 协力生效：每局确定性随机漏掉 1~2 个普通单点（首音保留），落点每局不同；关闭后正常按谱面全连。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Text="仅 Native 协力/竞演生效：每局主动漏掉 1~2 个单点；随机 GREAT 生效时本局跳过漏键。关闭后按完整谱面输入，不保证全连。" TextWrapping="Wrap" Opacity="0.75"/>
           </StackPanel>
         </TabItem>
         <TabItem Header="任务安全">
