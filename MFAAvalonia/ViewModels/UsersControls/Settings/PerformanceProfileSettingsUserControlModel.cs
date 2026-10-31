@@ -63,6 +63,12 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _nativeLifeFeedbackEnabled;
     [ObservableProperty] private bool _nativeEarlyStartEnabled;
     [ObservableProperty] private bool _nativeWaitJitterFilterEnabled;
+    [ObservableProperty] private bool _nativeRandomGreatEnabled;
+    [ObservableProperty] private decimal _nativeRandomGreatBasePercent = 2m;
+    [ObservableProperty] private int _nativeRandomGreatLevelStart = 26;
+    [ObservableProperty] private decimal _nativeRandomGreatPerLevelPercent = 1m;
+    [ObservableProperty] private decimal _nativeRandomGreatMaxPercent = 10m;
+    [ObservableProperty] private int _nativeRandomGreatOffsetMs = 45;
     [ObservableProperty] private bool _cooperativeJitterEnabled = true;
     [ObservableProperty] private bool _cooperativeMemberLoadingGuardEnabled = true;
     [ObservableProperty] private bool _bestdoriAutoUpdateEnabled = true;
@@ -123,6 +129,12 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnNativeEarlyStartEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeLifeFeedbackEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeWaitJitterFilterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeRandomGreatEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeRandomGreatBasePercentChanged(decimal value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeRandomGreatLevelStartChanged(int value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeRandomGreatPerLevelPercentChanged(decimal value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeRandomGreatMaxPercentChanged(decimal value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeRandomGreatOffsetMsChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnCooperativeJitterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnCooperativeMemberLoadingGuardEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnBestdoriAutoUpdateEnabledChanged(bool value)
@@ -192,6 +204,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
                 NativeRealtimeEnabled =
                     runtime?.Value<bool?>("native_realtime_enabled") ?? false;
                 LoadNativeExperimentalOptions(runtime);
+                LoadRandomGreatOptions(runtime);
                 CooperativeJitterEnabled =
                     runtime?.Value<bool?>("cooperative_jitter_enabled") ?? true;
                 LoadCooperativeMemberLoadingGuard(runtime);
@@ -249,6 +262,12 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["native_life_feedback_enabled"] = NativeLifeFeedbackEnabled,
         ["native_early_start_enabled"] = NativeEarlyStartEnabled,
         ["native_wait_jitter_filter_enabled"] = NativeWaitJitterFilterEnabled,
+        ["native_random_great_enabled"] = NativeRandomGreatEnabled,
+        ["native_random_great_base_percent"] = ValidateRandomGreatNumber(NativeRandomGreatBasePercent, 0, 20, "native_random_great_base_percent"),
+        ["native_random_great_level_start"] = (int)ValidateRandomGreatNumber(NativeRandomGreatLevelStart, 1, 40, "native_random_great_level_start"),
+        ["native_random_great_per_level_percent"] = ValidateRandomGreatNumber(NativeRandomGreatPerLevelPercent, 0, 20, "native_random_great_per_level_percent"),
+        ["native_random_great_max_percent"] = ValidateRandomGreatNumber(NativeRandomGreatMaxPercent, 0, 20, "native_random_great_max_percent"),
+        ["native_random_great_offset_ms"] = (int)ValidateRandomGreatNumber(NativeRandomGreatOffsetMs, 35, 60, "native_random_great_offset_ms"),
         ["cooperative_jitter_enabled"] = CooperativeJitterEnabled,
         ["cooperative_member_loading_guard_enabled"] = CooperativeMemberLoadingGuardEnabled,
         ["bestdori_auto_update_enabled"] = BestdoriAutoUpdateEnabled,
@@ -296,6 +315,42 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         NativeEarlyStartEnabled = early;
         NativeLifeFeedbackEnabled = life;
         NativeWaitJitterFilterEnabled = wait;
+    }
+
+    private static decimal ValidateRandomGreatNumber(decimal value, decimal low, decimal high, string key)
+    {
+        if (value < low || value > high) throw new InvalidDataException($"{key} 必须在 {low}..{high} 之间");
+        return value;
+    }
+
+    private void LoadRandomGreatOptions(JObject? runtime)
+    {
+        static decimal Read(JObject? source, string key, decimal fallback, decimal low, decimal high, bool integer = false)
+        {
+            var token = source?[key];
+            if (token == null) return fallback;
+            if (token.Type != JTokenType.Integer && (integer || token.Type != JTokenType.Float))
+                throw new InvalidDataException($"{key} 类型无效");
+            try { return ValidateRandomGreatNumber(token.Value<decimal>(), low, high, key); }
+            catch (Exception ex) when (ex is OverflowException or FormatException or InvalidCastException)
+            { throw new InvalidDataException($"{key} 必须是有限数字", ex); }
+        }
+        var token = runtime?["native_random_great_enabled"];
+        if (token != null && token.Type != JTokenType.Boolean)
+            throw new InvalidDataException("native_random_great_enabled 必须是布尔值");
+        var enabled = token?.Value<bool>() ?? false;
+        var basis = Read(runtime, "native_random_great_base_percent", 2m, 0, 20);
+        var start = (int)Read(runtime, "native_random_great_level_start", 26, 1, 40, true);
+        var increment = Read(runtime, "native_random_great_per_level_percent", 1m, 0, 20);
+        var maximum = Read(runtime, "native_random_great_max_percent", 10m, 0, 20);
+        var offset = (int)Read(runtime, "native_random_great_offset_ms", 45, 35, 60, true);
+        // 全组校验成功才替换；读取失败保留已有选择，禁止默认值覆盖用户配置。
+        NativeRandomGreatEnabled = enabled;
+        NativeRandomGreatBasePercent = basis;
+        NativeRandomGreatLevelStart = start;
+        NativeRandomGreatPerLevelPercent = increment;
+        NativeRandomGreatMaxPercent = maximum;
+        NativeRandomGreatOffsetMs = offset;
     }
 
     private void LoadCooperativeMemberLoadingGuard(JObject? runtime)

@@ -630,6 +630,65 @@ static void NativeExperimentalOptionsKeepBooleanAndSaveBoundaries()
         .GetValue(model)!).Cancel();
 }
 
+static void RandomGreatOptionsRoundtripValidateAndPreserveAutoSaveBoundary()
+{
+    var type = typeof(PerformanceProfileSettingsUserControlModel);
+    var model = new PerformanceProfileSettingsUserControlModel();
+    var load = type.GetMethod("LoadRandomGreatOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var capture = type.GetMethod("CaptureRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var pending = type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var loaded = type.GetField("_runtimeOptionsLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    load.Invoke(model, [new JObject()]);
+    Assert(!model.NativeRandomGreatEnabled && model.NativeRandomGreatBasePercent == 2m
+        && model.NativeRandomGreatLevelStart == 26 && model.NativeRandomGreatPerLevelPercent == 1m
+        && model.NativeRandomGreatMaxPercent == 10m && model.NativeRandomGreatOffsetMs == 45,
+        "old settings must default random GREAT off with documented numeric values");
+    var options = new JObject { ["native_random_great_enabled"] = true, ["native_random_great_base_percent"] = 3.5m,
+        ["native_random_great_level_start"] = 25, ["native_random_great_per_level_percent"] = .5m,
+        ["native_random_great_max_percent"] = 7m, ["native_random_great_offset_ms"] = 50 };
+    load.Invoke(model, [options]);
+    model.NativeRealtimeEnabled = false;
+    var snapshot = (JObject)capture.Invoke(model, null)!;
+    foreach (var field in options.Properties())
+        Assert(JToken.DeepEquals(snapshot[field.Name], field.Value), "capture or disabling Native lost random GREAT field " + field.Name);
+    var reloaded = new PerformanceProfileSettingsUserControlModel();
+    load.Invoke(reloaded, [snapshot]);
+    Assert(reloaded.NativeRandomGreatEnabled && reloaded.NativeRandomGreatBasePercent == 3.5m
+        && reloaded.NativeRandomGreatOffsetMs == 50, "random GREAT save/reload lost values");
+    Assert(pending.GetValue(model) == null, "unloaded random GREAT edits must not auto-save defaults");
+    foreach (var (key, bad) in new (string, JToken)[] {
+        ("native_random_great_enabled", new JValue("false")), ("native_random_great_enabled", new JValue(1)),
+        ("native_random_great_base_percent", new JValue(true)), ("native_random_great_base_percent", new JValue("2")),
+        ("native_random_great_base_percent", new JValue(double.NaN)), ("native_random_great_base_percent", new JValue(double.PositiveInfinity)),
+        ("native_random_great_base_percent", new JValue(21)), ("native_random_great_per_level_percent", new JValue(-1)),
+        ("native_random_great_max_percent", new JValue(21)), ("native_random_great_level_start", new JValue(26.0)),
+        ("native_random_great_level_start", new JValue(0)), ("native_random_great_offset_ms", new JValue(45.0)),
+        ("native_random_great_offset_ms", new JValue(34)), ("native_random_great_offset_ms", new JValue(61)) })
+    {
+        var invalid = (JObject)options.DeepClone();
+        invalid["native_random_great_base_percent"] = 1m;
+        invalid.Remove(key);
+        invalid[key] = bad;
+        try
+        {
+            load.Invoke(model, [invalid]);
+            throw new InvalidOperationException("invalid random GREAT option accepted: " + key);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
+        Assert(model.NativeRandomGreatBasePercent == 3.5m && model.NativeRandomGreatOffsetMs == 50,
+            "invalid grouped load partially replaced random GREAT choices");
+    }
+    loaded.SetValue(model, true);
+    model.SkipResultCheck = true;
+    var saved = (JObject)pending.GetValue(model)!;
+    foreach (var field in options.Properties())
+        Assert(JToken.DeepEquals(saved[field.Name], field.Value), "full runtime save lost random GREAT field " + field.Name);
+    model.NativeRandomGreatOffsetMs = 55;
+    Assert(((JObject)pending.GetValue(model)!).Value<int>("native_random_great_offset_ms") == 55,
+        "random GREAT numeric edit did not schedule a full runtime save");
+    ((DebouncedAsyncAction)type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(model)!).Cancel();
+}
+
 static void CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary()
 {
     var type = typeof(PerformanceProfileSettingsUserControlModel);
@@ -856,6 +915,12 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         model.NativeLifeFeedbackEnabled = true;
         model.NativeWaitJitterFilterEnabled = true;
         model.NativeEarlyStartEnabled = true;
+        model.NativeRandomGreatEnabled = true;
+        model.NativeRandomGreatBasePercent = 3.5m;
+        model.NativeRandomGreatLevelStart = 25;
+        model.NativeRandomGreatPerLevelPercent = .5m;
+        model.NativeRandomGreatMaxPercent = 7m;
+        model.NativeRandomGreatOffsetMs = 50;
         model.ChartPredictionEnabled = false;
         model.ChartPredictPresses = false;
         // 分类挂载和显式刷新均不得覆盖尚在 debounce 中的运行设置。
@@ -874,6 +939,10 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         Assert(!reloaded.NativeRealtimeEnabled, "guard must be independent of native input switch");
         Assert(reloaded.NativeLifeFeedbackEnabled && reloaded.NativeWaitJitterFilterEnabled && reloaded.NativeEarlyStartEnabled,
             "experimental Native settings did not persist through real manager");
+        Assert(reloaded.NativeRandomGreatEnabled && reloaded.NativeRandomGreatBasePercent == 3.5m
+            && reloaded.NativeRandomGreatLevelStart == 25 && reloaded.NativeRandomGreatPerLevelPercent == .5m
+            && reloaded.NativeRandomGreatMaxPercent == 7m && reloaded.NativeRandomGreatOffsetMs == 50,
+            "random GREAT settings did not persist through real manager");
         Assert(!reloaded.ChartPredictionEnabled && !reloaded.ChartPredictPresses,
             "Legacy false choices were lost when saving Native or chart update settings");
         Assert(!reloaded.BestdoriAutoUpdateEnabled && reloaded.BestdoriAutoUpdateIntervalHours == 72,
@@ -920,6 +989,9 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         reloaded.NativeLifeFeedbackEnabled = false;
         reloaded.NativeWaitJitterFilterEnabled = false;
         reloaded.NativeEarlyStartEnabled = false;
+        reloaded.NativeRandomGreatEnabled = false;
+        reloaded.NativeRandomGreatBasePercent = 2m;
+        reloaded.NativeRandomGreatOffsetMs = 45;
         await Task.Delay(750);
         Assert(await File.ReadAllTextAsync(selectionPath) == "broken selection", "failed read overwrote file with defaults");
         Console.WriteLine("Cooperative guard profile-manager persistence tests passed: " + root);
@@ -1617,6 +1689,7 @@ await RefreshRetryDoesNotDuplicatePendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
 LiveBoostTargetPreservesDefaultsZeroAndAutoSaveBoundary();
 NativeExperimentalOptionsKeepBooleanAndSaveBoundaries();
+RandomGreatOptionsRoundtripValidateAndPreserveAutoSaveBoundary();
 CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary();
 await ProfileManagerPipeUsesUtf8IndependentlyOfConsoleAsync();
 await CooperativeLoadingGuardPersistsThroughProfileManagerAsync();
