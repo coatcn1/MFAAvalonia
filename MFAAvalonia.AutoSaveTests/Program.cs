@@ -1650,6 +1650,18 @@ static async Task GitHubWebFallbackRequiresExactShaSidecarAsync()
     }
 }
 
+if (args.Contains("--framework-logging-child"))
+{
+    MaaFrameworkLoggingTests.WriteChildReport(args);
+    return;
+}
+
+if (args.Contains("--framework-logging"))
+{
+    await MaaFrameworkLoggingTests.RunAsync();
+    return;
+}
+
 if (args.Contains("--live-stop-confirmation"))
 {
     AppBuilder.Configure<Application>().UseWin32().UseSkia().SetupWithoutStarting();
@@ -1696,6 +1708,7 @@ if (args.Contains("--power-lifecycle"))
     return;
 }
 
+await MaaFrameworkLoggingTests.RunAsync();
 AdbEndpointGuardDefaultsToEnabledAndHonoursExplicitDisable();
 await AdbRouteReconnectTests.RunAsync();
 AdbEndpointGuardRejectsDeclaredLdWithInvalidProcessIdentity();

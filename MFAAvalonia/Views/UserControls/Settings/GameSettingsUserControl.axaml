@@ -71,6 +71,15 @@
         <suki:GlassCard Padding="25">
             <StackPanel Spacing="15">
                 <DockPanel>
+                    <ToggleSwitch Classes="Switch" DockPanel.Dock="Right"
+                        IsChecked="{Binding EnableFrameworkLogging, Mode=TwoWay}" VerticalAlignment="Top" />
+                    <TextBlock FontSize="16" FontWeight="SemiBold"
+                        Text="MaaFramework 日志与调试图（排障用）" VerticalAlignment="Center" />
+                </DockPanel>
+                <TextBlock FontSize="13" Opacity="0.75" TextWrapping="Wrap"
+                    Text="新配置默认关闭；开启后记录框架详细日志及所选调试图，排障完成后可关闭。MFA 任务日志和演出结果仍会保留；历史日志请关闭 MFA 后单独清理 debug 下的 maafw.log 和 maafw.bak.*.log。" />
+                <TextBlock FontSize="13" Opacity="0.75" TextWrapping="Wrap" Text="{Binding FrameworkLoggingStatus}" />
+                <DockPanel>
                     <ToggleSwitch
                         Classes="Switch"
                         DockPanel.Dock="Right"
@@ -98,7 +107,7 @@
                             Text="{markup:I18n {x:Static helper:LangKeys.EnableRecording}}" />
                     </StackPanel>
                 </DockPanel>
-                <DockPanel>
+                <DockPanel IsEnabled="{Binding EnableFrameworkLogging}">
                     <ToggleSwitch
                         Classes="Switch"
                         DockPanel.Dock="Right"
@@ -112,7 +121,7 @@
                             Text="{markup:I18n {x:Static helper:LangKeys.EnableSaveDraw}}" />
                     </StackPanel>
                 </DockPanel>
-                <DockPanel>
+                <DockPanel IsEnabled="{Binding EnableFrameworkLogging}">
                     <ToggleSwitch
                         Classes="Switch"
                         DockPanel.Dock="Right"

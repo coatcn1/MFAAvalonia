@@ -204,6 +204,7 @@ public static class AgentHelper
         startInfo.Environment["MFA_INSTANCE_NAME"] =
             MaaProcessorManager.Instance.GetInstanceName(processor.InstanceId) ?? string.Empty;
         ApplyChildProcessEncodingEnvironmentVariables(startInfo, isPythonProcess);
+        MaaFrameworkLoggingPolicy.ApplyAgentEnvironment(startInfo);
         ApplyPiEnvironmentVariables(startInfo, processor);
         MaaBanGDreamAgentSession.Apply(startInfo);
 
