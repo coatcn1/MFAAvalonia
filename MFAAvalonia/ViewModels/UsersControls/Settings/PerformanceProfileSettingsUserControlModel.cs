@@ -76,6 +76,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private string _bestdoriSyncStatus = BestdoriUpdateService.Shared.Status;
     [ObservableProperty] private int _playFailureRetryCount = 1;
     [ObservableProperty] private int _liveBoostTarget = 3;
+    [ObservableProperty] private bool _liveBoostSettingsEnabled = true;
     [ObservableProperty] private decimal _easyCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _normalCalibrationSpeed = 2.00m;
     [ObservableProperty] private decimal _hardCalibrationSpeed = 2.00m;
@@ -145,6 +146,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnBestdoriAutoUpdateIntervalHoursChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnPlayFailureRetryCountChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnLiveBoostTargetChanged(int value) => ScheduleRuntimeAutoSave();
+    partial void OnLiveBoostSettingsEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnEasyCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnNormalCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
     partial void OnHardCalibrationSpeedChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -274,6 +276,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["bestdori_auto_update_interval_hours"] = BestdoriAutoUpdateIntervalHours,
         ["play_failure_retry_count"] = PlayFailureRetryCount,
         ["live_boost_target"] = ValidateLiveBoostTarget(LiveBoostTarget),
+        ["live_boost_settings_enabled"] = LiveBoostSettingsEnabled,
         ["calibration_note_speeds"] = new JObject
         {
             ["Easy"] = EasyCalibrationSpeed,
@@ -293,10 +296,17 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
 
     private void LoadLiveBoostTarget(JObject? runtime)
     {
+        var enabledToken = runtime?["live_boost_settings_enabled"];
+        if (enabledToken != null && enabledToken.Type != JTokenType.Boolean)
+            throw new InvalidDataException("live_boost_settings_enabled 必须是布尔值");
         var token = runtime?["live_boost_target"];
         if (token != null && token.Type != JTokenType.Integer)
             throw new InvalidDataException("live_boost_target 必须是 0..3 的整数");
-        LiveBoostTarget = ValidateLiveBoostTarget(token?.Value<int>() ?? 3);
+        var target = ValidateLiveBoostTarget(token?.Value<int>() ?? 3);
+        // 整组校验通过后再赋值，非法目标或开关不能留下部分加载状态。
+        var enabled = enabledToken?.Value<bool>() ?? true;
+        LiveBoostSettingsEnabled = enabled;
+        LiveBoostTarget = target;
     }
 
     private void LoadNativeExperimentalOptions(JObject? runtime)

@@ -482,32 +482,49 @@ static void LiveBoostTargetPreservesDefaultsZeroAndAutoSaveBoundary()
     var pending = type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
     var loaded = type.GetField("_runtimeOptionsLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!;
     var save = (DebouncedAsyncAction)type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(model)!;
-    Assert(model.LiveBoostTarget == 3, "new live boost target must default 3");
+    Assert(model.LiveBoostTarget == 3 && model.LiveBoostSettingsEnabled, "new live boost settings must default enabled and 3");
     load.Invoke(model, [new JObject()]);
-    Assert(model.LiveBoostTarget == 3, "old settings must default live boost target 3");
+    Assert(model.LiveBoostTarget == 3 && model.LiveBoostSettingsEnabled, "old settings must default enabled and 3");
     load.Invoke(model, [new JObject { ["live_boost_target"] = 0 }]);
     Assert(model.LiveBoostTarget == 0 && ((JObject)capture.Invoke(model, null)!).Value<int>("live_boost_target") == 0,
         "explicit zero lost during load/capture");
+    load.Invoke(model, [new JObject { ["live_boost_settings_enabled"] = false, ["live_boost_target"] = 0 }]);
+    Assert(!model.LiveBoostSettingsEnabled && model.LiveBoostTarget == 0,
+        "disabled live boost settings lost retained target");
+    foreach (var bad in new JToken[] { new JValue(0), new JValue("false"), JValue.CreateNull() })
+    {
+        try
+        {
+            load.Invoke(model, [new JObject { ["live_boost_settings_enabled"] = bad, ["live_boost_target"] = 3 }]);
+            throw new InvalidOperationException("invalid live boost switch accepted");
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
+        Assert(!model.LiveBoostSettingsEnabled && model.LiveBoostTarget == 0 && pending.GetValue(model) == null,
+            "bad switch load partially changed settings or scheduled a save");
+    }
     foreach (var bad in new JToken[] { new JValue(true), new JValue(1.0), new JValue("3"), new JValue(4), JValue.CreateNull() })
     {
         try
         {
-            load.Invoke(model, [new JObject { ["live_boost_target"] = bad }]);
+            load.Invoke(model, [new JObject { ["live_boost_settings_enabled"] = true, ["live_boost_target"] = bad }]);
             throw new InvalidOperationException("invalid live boost target accepted");
         }
         catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
-        Assert(model.LiveBoostTarget == 0 && pending.GetValue(model) == null, "bad load overwrote or saved default");
+        Assert(!model.LiveBoostSettingsEnabled && model.LiveBoostTarget == 0 && pending.GetValue(model) == null, "bad load overwrote or saved default");
     }
     loaded.SetValue(model, true);
+    model.LiveBoostSettingsEnabled = true;
+    model.LiveBoostSettingsEnabled = false;
     model.LiveBoostTarget = 3;
     model.LiveBoostTarget = 0;
     model.SkipResultCheck = true;
-    Assert(((JObject)pending.GetValue(model)!).Value<int>("live_boost_target") == 0,
+    Assert(((JObject)pending.GetValue(model)!).Value<int>("live_boost_target") == 0
+        && ((JObject)pending.GetValue(model)!).Value<bool>("live_boost_settings_enabled") == false,
         "auto-save capture lost zero live boost target");
     save.Cancel();
     var restored = new PerformanceProfileSettingsUserControlModel();
     load.Invoke(restored, [(JObject)capture.Invoke(model, null)!]);
-    Assert(restored.LiveBoostTarget == 0, "live boost target did not survive capture/reload");
+    Assert(restored.LiveBoostTarget == 0 && !restored.LiveBoostSettingsEnabled, "live boost settings did not survive capture/reload");
 }
 
 static void RuntimeOptionsIncludeProcessCleanupSwitch()
@@ -907,10 +924,12 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         var model = new PerformanceProfileSettingsUserControlModel();
         models.Add(model);
         await Task.WhenAll(model.EnsureLoadedAsync(), model.EnsureLoadedAsync());
-        Assert(model.CooperativeMemberLoadingGuardEnabled, "old selection did not load guard as enabled");
+        Assert(model.CooperativeMemberLoadingGuardEnabled && model.LiveBoostSettingsEnabled, "old selection did not load enabled defaults");
         Assert(model.BestdoriAutoUpdateEnabled && model.BestdoriAutoUpdateIntervalHours == 24,
             "old selection did not migrate auto update defaults");
         Assert(await File.ReadAllTextAsync(selectionPath) == oldSelection, "refresh auto-saved defaults");
+        model.LiveBoostTarget = 2;
+        model.LiveBoostSettingsEnabled = false;
         model.CooperativeMemberLoadingGuardEnabled = false;
         model.NativeLifeFeedbackEnabled = true;
         model.NativeWaitJitterFilterEnabled = true;
@@ -936,6 +955,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         models.Add(reloaded);
         await reloaded.RefreshAsync();
         Assert(!reloaded.CooperativeMemberLoadingGuardEnabled, "saved false did not survive refresh");
+        Assert(!reloaded.LiveBoostSettingsEnabled && reloaded.LiveBoostTarget == 2, "disabled live boost settings did not survive real manager roundtrip");
         Assert(!reloaded.NativeRealtimeEnabled, "guard must be independent of native input switch");
         Assert(reloaded.NativeLifeFeedbackEnabled && reloaded.NativeWaitJitterFilterEnabled && reloaded.NativeEarlyStartEnabled,
             "experimental Native settings did not persist through real manager");
@@ -972,6 +992,8 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         Assert(JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
             .Value<bool?>("cooperative_member_loading_guard_enabled") == false, "other option save lost false");
         Assert(JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
+            .Value<bool?>("live_boost_settings_enabled") == false, "other option save lost disabled live boost settings");
+        Assert(JObject.Parse(File.ReadAllText(selectionPath))["runtime_options"]?
             .Value<bool?>("native_life_feedback_enabled") == true, "other option save lost experiment");
         await WaitUntilAsync(() => type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(reloaded) == null, TimeSpan.FromSeconds(5));
         ((DebouncedAsyncAction)autoSaveField.GetValue(reloaded)!).Cancel();
@@ -982,6 +1004,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
             // 无 UI 的测试进程可能没有 Toast 服务，读取失败状态仍须关闭保存门禁。
         }
         Assert(loadedField.GetValue(reloaded) is false, "failed refresh must close auto-save gate");
+        reloaded.LiveBoostSettingsEnabled = true;
         reloaded.CooperativeMemberLoadingGuardEnabled = true;
         reloaded.BestdoriAutoUpdateEnabled = true;
         reloaded.BestdoriAutoUpdateIntervalHours = 1;

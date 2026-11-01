@@ -1,43 +1,88 @@
 <UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:settings="clr-namespace:MFAAvalonia.ViewModels.UsersControls.Settings" xmlns:suki="https://github.com/kikipoulet/SukiUI" x:Class="MFAAvalonia.Views.UserControls.Settings.PerformanceProfileSettingsUserControl" x:DataType="settings:PerformanceProfileSettingsUserControlModel">
+  <UserControl.Styles>
+    <Style Selector="TextBlock">
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style Selector="NumericUpDown">
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style Selector="ToggleSwitch">
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style Selector="TabItem">
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style Selector="DataGrid TextBlock">
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style Selector="TextBlock.table-text">
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style Selector="TextBlock.hint">
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style Selector="TextBlock.page-title">
+      <Setter Property="FontSize" Value="20"/>
+      <Setter Property="FontWeight" Value="DemiBold"/>
+    </Style>
+    <Style Selector="TextBlock.group-title">
+      <Setter Property="FontSize" Value="18"/>
+      <Setter Property="FontWeight" Value="DemiBold"/>
+    </Style>
+    <Style Selector="TextBlock.subsection-title">
+      <Setter Property="FontSize" Value="16"/>
+      <Setter Property="FontWeight" Value="DemiBold"/>
+    </Style>
+  </UserControl.Styles>
   <suki:GlassCard Margin="0,15,0,0" Padding="20">
     <StackPanel Spacing="12">
-      <TextBlock Text="演出设置" FontSize="20" FontWeight="DemiBold"/>
+      <TextBlock Classes="page-title" Text="演出设置"/>
       <TabControl>
         <TabItem Header="常用">
           <StackPanel Spacing="14" Margin="0,12,0,0">
-            <TextBlock Text="Native C++ 演奏核心" FontSize="16" FontWeight="DemiBold"/>
+            <TextBlock Classes="group-title" Text="Native C++ 演奏核心"/>
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right" ToolTip.Tip="默认关闭；Native 从首音独占触控，故障时安全终止，不在曲中回退 Legacy。" IsChecked="{Binding NativeRealtimeEnabled, Mode=TwoWay}"/>
               <TextBlock Text="启用 Native C++ 演奏核心（测试）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="使用本地谱面演奏，需要匹配的 Native Profile；修改下局生效。" TextWrapping="Wrap" Opacity="0.75"/>
-            <TextBlock Text="LIVE BOOST 体力消耗" FontSize="18" FontWeight="DemiBold"/>
-            <TextBlock Text="默认 3；零消耗测试选 0。" TextWrapping="Wrap"/>
+            <TextBlock Classes="hint" Text="使用本地谱面演奏，需要匹配的 Native Profile；修改下局生效。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="group-title" Text="LIVE BOOST 体力消耗"/>
+            <DockPanel>
+              <ToggleSwitch Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding LiveBoostSettingsEnabled, Mode=TwoWay}"/>
+              <TextBlock Text="自动检查 LIVE BOOST 体力消耗" VerticalAlignment="Center"/>
+            </DockPanel>
+            <TextBlock Classes="hint" Text="默认 3；零消耗测试选 0。" TextWrapping="Wrap"/>
             <StackPanel Orientation="Horizontal" Spacing="12">
               <TextBlock Text="目标消耗" VerticalAlignment="Center"/>
-              <NumericUpDown ToolTip.Tip="挑战演出使用独立点数；一键实时和组曲中途续跑不离开现场修改体力。" Value="{Binding LiveBoostTarget, Mode=TwoWay}" Minimum="0" Maximum="3" Increment="1" FormatString="0" Width="120"/>
+              <NumericUpDown IsEnabled="{Binding LiveBoostSettingsEnabled}" ToolTip.Tip="挑战演出使用独立点数；一键实时和组曲中途续跑不离开现场修改体力。" Value="{Binding LiveBoostTarget, Mode=TwoWay}" Minimum="0" Maximum="3" Increment="1" FormatString="0" Width="120"/>
             </StackPanel>
-            <TextBlock Text="开演前自动检查、修正并复核体力消耗；无法确认时停止任务。" TextWrapping="Wrap"/>
+            <TextBlock Classes="hint" Text="开启后自动检查、修正并复核；关闭后不检查或修改游戏内耗火，自动补体力也会跳过，请自行确认消耗。目标值保留，下次导航生效。" TextWrapping="Wrap"/>
           </StackPanel>
         </TabItem>
         <TabItem Header="Profile">
           <StackPanel Spacing="14" Margin="0,12,0,0">
-            <TextBlock Text="高难度 Profile 可兼容较低难度；Expert 与 Special 视为同一兼容等级。" Opacity="0.75"/>
-            <TextBlock Text="Expert / Special 建议把游戏内音符流速设为 5.0 或更高；流速过低会让相邻音符完全遮挡，超出图像拆分能力。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="高难度 Profile 可兼容较低难度；Expert 与 Special 视为同一兼容等级。" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="Expert / Special 建议把游戏内音符流速设为 5.0 或更高；流速过低会让相邻音符完全遮挡，超出图像拆分能力。" TextWrapping="Wrap" Opacity="0.75"/>
             <StackPanel Orientation="Horizontal" Spacing="8">
               <TextBlock Text="任务难度" VerticalAlignment="Center"/>
               <ComboBox ItemsSource="{Binding Difficulties}" SelectedItem="{Binding Difficulty}" Width="130"/>
               <Button Content="刷新" Command="{Binding RefreshCommand}"/>
             </StackPanel>
-            <TextBlock Text="单击行查看或编辑参数；双击行把该 Profile 设为当前任务难度的选择。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="单击行查看或编辑参数；双击行把该 Profile 设为当前任务难度的选择。" TextWrapping="Wrap" Opacity="0.75"/>
             <TextBlock Text="{Binding SelectionText}" TextWrapping="Wrap" FontWeight="DemiBold"/>
-            <DataGrid x:Name="ProfilesGrid" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" AutoGenerateColumns="False" IsReadOnly="True" CanUserResizeColumns="True" CanUserReorderColumns="False" Height="230" FontSize="14" RowHeight="32" GridLinesVisibility="Horizontal" DoubleTapped="ProfilesGrid_OnDoubleTapped">
+            <DataGrid x:Name="ProfilesGrid" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" AutoGenerateColumns="False" IsReadOnly="True" CanUserResizeColumns="True" CanUserReorderColumns="False" Height="230" RowHeight="32" GridLinesVisibility="Horizontal" DoubleTapped="ProfilesGrid_OnDoubleTapped">
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="状态" Width="96">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
                       <Border IsVisible="{Binding IsCurrentSelection}" Background="{DynamicResource SukiPrimaryColor15}" CornerRadius="5" Padding="8,2" HorizontalAlignment="Left">
-                        <TextBlock Text="当前选择" FontSize="12" FontWeight="DemiBold" Foreground="{DynamicResource SukiPrimaryColor}"/>
+                        <TextBlock Classes="table-text" Text="当前选择" FontWeight="DemiBold" Foreground="{DynamicResource SukiPrimaryColor}"/>
                       </Border>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
@@ -45,55 +90,55 @@
                 <DataGridTemplateColumn Header="文件名" Width="220" MinWidth="120">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding Filename}" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                      <TextBlock Classes="table-text" Text="{Binding Filename}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="校准难度">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding Difficulty}" FontSize="13" VerticalAlignment="Center"/>
+                      <TextBlock Classes="table-text" Text="{Binding Difficulty}" VerticalAlignment="Center"/>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="验收">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding AcceptedText}" FontSize="13" VerticalAlignment="Center"/>
+                      <TextBlock Classes="table-text" Text="{Binding AcceptedText}" VerticalAlignment="Center"/>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="引擎" Width="80">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding EngineText}" FontSize="13" VerticalAlignment="Center"/>
+                      <TextBlock Classes="table-text" Text="{Binding EngineText}" VerticalAlignment="Center"/>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="环境">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding EnvironmentMatchText}" FontSize="13" VerticalAlignment="Center"/>
+                      <TextBlock Classes="table-text" Text="{Binding EnvironmentMatchText}" VerticalAlignment="Center"/>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="流速" Width="90">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding NoteSpeedText}" FontSize="13" VerticalAlignment="Center"/>
+                      <TextBlock Classes="table-text" Text="{Binding NoteSpeedText}" VerticalAlignment="Center"/>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="修改时间" Width="180">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate x:DataType="settings:PerformanceProfileItem">
-                      <TextBlock Text="{Binding ModifiedAt}" FontSize="13" VerticalAlignment="Center"/>
+                      <TextBlock Classes="table-text" Text="{Binding ModifiedAt}" VerticalAlignment="Center"/>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
               </DataGrid.Columns>
             </DataGrid>
-            <TextBlock Text="{Binding SelectedProfile.EnvironmentText}" TextWrapping="Wrap"/>
+            <TextBlock Classes="hint" Text="{Binding SelectedProfile.EnvironmentText}" TextWrapping="Wrap"/>
             <Grid ColumnDefinitions="Auto,110,20,Auto,110" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
               <TextBlock Grid.Row="0" Grid.Column="0" Text="目标 FPS (15–240)" VerticalAlignment="Center"/>
               <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding TargetFps, Mode=TwoWay}" Minimum="15" Maximum="240"/>
@@ -104,22 +149,22 @@
               <TextBlock Grid.Row="1" Grid.Column="3" Text="演奏区超时 ms (≤10000)" VerticalAlignment="Center"/>
               <NumericUpDown Grid.Row="1" Grid.Column="4" Value="{Binding PlayfieldTimeoutMs, Mode=TwoWay}" Minimum="50" Maximum="10000"/>
             </Grid>
-            <TextBlock Text="修改后自动保存；修改已验收 Profile 时会先确认并撤销验收。" TextWrapping="Wrap" Opacity="0.75"/>
-            <TextBlock Text="校准记录" FontSize="16" FontWeight="DemiBold"/>
-            <TextBlock Text="{Binding SelectedProfile.CalibrationRecordsText}" TextWrapping="Wrap"/>
+            <TextBlock Classes="hint" Text="修改后自动保存；修改已验收 Profile 时会先确认并撤销验收。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="subsection-title" Text="校准记录"/>
+            <TextBlock Classes="hint" Text="{Binding SelectedProfile.CalibrationRecordsText}" TextWrapping="Wrap"/>
           </StackPanel>
         </TabItem>
         <TabItem Header="流速">
           <StackPanel Spacing="14" Margin="0,12,0,0">
-            <TextBlock Text="游戏内音符流速" FontSize="18" FontWeight="DemiBold"/>
-            <TextBlock Text="开启后，任务从主页进入“选项”，只读取、修正并复核音符流速；其他游戏内演出设置由用户按 README 手动配置。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="group-title" Text="游戏内音符流速"/>
+            <TextBlock Classes="hint" Text="开启后，任务从主页进入“选项”，只读取、修正并复核音符流速；其他游戏内演出设置由用户按 README 手动配置。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding NoteSpeedSettingsEnabled, Mode=TwoWay}"/>
               <TextBlock Text="开演前自动设置并验证流速（关闭后完全跳过并信任下方目标值）" VerticalAlignment="Center"/>
             </DockPanel>
             <Separator Margin="0,4"/>
-            <TextBlock Text="每难度校准流速" FontSize="16" FontWeight="DemiBold"/>
-            <TextBlock Text="每个 Profile 固定一种流速；同一次校准期间不会自动改变。开演前会读取游戏内实际值，不一致时自动修正并复核。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="subsection-title" Text="每难度校准流速"/>
+            <TextBlock Classes="hint" Text="每个 Profile 固定一种流速；同一次校准期间不会自动改变。开演前会读取游戏内实际值，不一致时自动修正并复核。" TextWrapping="Wrap" Opacity="0.75"/>
             <Grid ColumnDefinitions="Auto,110,24,Auto,110" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="10">
               <TextBlock Grid.Row="0" Grid.Column="0" Text="Easy" VerticalAlignment="Center"/>
               <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding EasyCalibrationSpeed, Mode=TwoWay}" Minimum="1" Maximum="12" Increment="0.01" FormatString="F2"/>
@@ -132,7 +177,7 @@
               <TextBlock Grid.Row="2" Grid.Column="0" Text="Special" VerticalAlignment="Center"/>
               <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding SpecialCalibrationSpeed, Mode=TwoWay}" Minimum="1" Maximum="12" Increment="0.01" FormatString="F2"/>
             </Grid>
-            <TextBlock Text="修改后自动保存。" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="修改后自动保存。" Opacity="0.75"/>
           </StackPanel>
         </TabItem>
         <TabItem Header="Native">
@@ -141,22 +186,22 @@
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right" IsEnabled="{Binding NativeRealtimeEnabled}" IsChecked="{Binding NativeEarlyStartEnabled, Mode=TwoWay}"/>
               <TextBlock Text="Native 协力上段首音检测（实验）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="默认关闭；仅 Native 协力/竞演、匹配环境且首音为外轨双 FLICK 时使用。准备时冻结，修改下一局生效；关闭 Native 保留选择。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="默认关闭；仅 Native 协力/竞演、匹配环境且首音为外轨双 FLICK 时使用。准备时冻结，修改下一局生效；关闭 Native 保留选择。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch IsEnabled="{Binding NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding NativeLifeFeedbackEnabled, Mode=TwoWay}"/>
               <TextBlock Text="Native 判定反馈微调（实验）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="默认关闭；仅正式 Native 局按判定字样微调未来输入，排练、校准和 Legacy 不使用。候选仍待真机验收。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="默认关闭；仅正式 Native 局按判定字样微调未来输入，排练、校准和 Legacy 不使用。候选仍待真机验收。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch IsEnabled="{Binding NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding NativeWaitJitterFilterEnabled, Mode=TwoWay}"/>
               <TextBlock Text="Native 等待抖动过滤（实验）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="默认关闭；过滤偶发等待延迟尖峰。本局准备时冻结实验开关，下局生效；关闭 Native 仍保留选择。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="默认关闭；过滤偶发等待延迟尖峰。本局准备时冻结实验开关，下局生效；关闭 Native 仍保留选择。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch IsEnabled="{Binding NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding NativeRandomGreatEnabled, Mode=TwoWay}"/>
               <TextBlock Text="Native 随机 GREAT（实验）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="默认关闭，下局生效。仅正式 Native 独立普通 TAP；整曲判定数乘目标比例，安全候选不足时保留缺额。FAST/SLOW 尽量各半；不改首末组、双押、FLICK、HOLD/Slide。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="默认关闭，下局生效。仅正式 Native 独立普通 TAP；整曲判定数乘目标比例，安全候选不足时保留缺额。FAST/SLOW 尽量各半；不改首末组、双押、FLICK、HOLD/Slide。" TextWrapping="Wrap" Opacity="0.75"/>
             <Grid ColumnDefinitions="Auto,100,20,Auto,100" RowDefinitions="Auto,Auto,Auto" RowSpacing="8" ColumnSpacing="10" IsEnabled="{Binding NativeRealtimeEnabled}">
               <TextBlock Grid.Row="0" Grid.Column="0" Text="基础比例（%）" VerticalAlignment="Center"/>
               <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding NativeRandomGreatBasePercent, Mode=TwoWay}" Minimum="0" Maximum="20" Increment="0.1" FormatString="F1"/>
@@ -169,44 +214,44 @@
               <TextBlock Grid.Row="2" Grid.Column="0" Text="偏移幅度（ms）" VerticalAlignment="Center"/>
               <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding NativeRandomGreatOffsetMs, Mode=TwoWay}" Minimum="35" Maximum="60" Increment="1"/>
             </Grid>
-            <TextBlock Text="默认等级≤26 为 2%，27 为 3%，28 为 4%，以后每级加 1%，最高 10%。幅度尚待真机校准，计划偏移不保证实际 GREAT，可能出现其他判定；排练、校准和 Legacy 不使用。本局启用后暂停判定相位纠偏，保留生命/终点监控，协力/竞演不叠加漏键抖动。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="默认等级≤26 为 2%，27 为 3%，28 为 4%，以后每级加 1%，最高 10%。幅度尚待真机校准，计划偏移不保证实际 GREAT，可能出现其他判定；排练、校准和 Legacy 不使用。本局启用后暂停判定相位纠偏，保留生命/终点监控，协力/竞演不叠加漏键抖动。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch IsEnabled="{Binding NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding CooperativeJitterEnabled, Mode=TwoWay}"/>
               <TextBlock Text="协力演出漏键抖动（避免连续全 PERFECT 被判异常）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="仅 Native 协力/竞演生效：每局主动漏掉 1~2 个单点；随机 GREAT 生效时本局跳过漏键。关闭后按完整谱面输入，不保证全连。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="仅 Native 协力/竞演生效：每局主动漏掉 1~2 个单点；随机 GREAT 生效时本局跳过漏键。关闭后按完整谱面输入，不保证全连。" TextWrapping="Wrap" Opacity="0.75"/>
           </StackPanel>
         </TabItem>
         <TabItem Header="任务安全">
           <StackPanel Spacing="14" Margin="0,12,0,0">
-            <TextBlock Text="任务安全" FontSize="18" FontWeight="DemiBold"/>
+            <TextBlock Classes="group-title" Text="任务安全"/>
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding CooperativeMemberLoadingGuardEnabled, Mode=TwoWay}"/>
               <TextBlock Text="协力成员加载页保护" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="默认开启；成员加载页表情图标仍在时，不确认最终歌曲封面。对协力 Native 与 Legacy 均有效；修改后自动保存，在下次任务启动时生效。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="默认开启；成员加载页表情图标仍在时，不确认最终歌曲封面。对协力 Native 与 Legacy 均有效；修改后自动保存，在下次任务启动时生效。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding SkipResultCheck, Mode=TwoWay}"/>
               <TextBlock Text="不检查结果" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="开启后，其他演出结束仍会按安全节拍推进页面，但不读取或记录 PGGBM 判定数字；实时校准必须读取判定数字验收 Profile，不适用此开关。生命归零和手动停止仍按原流程处理。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="开启后，其他演出结束仍会按安全节拍推进页面，但不读取或记录 PGGBM 判定数字；实时校准必须读取判定数字验收 Profile，不适用此开关。生命归零和手动停止仍按原流程处理。" TextWrapping="Wrap" Opacity="0.75"/>
             <StackPanel Orientation="Horizontal" Spacing="10">
               <TextBlock Text="单局技术失败重试次数" VerticalAlignment="Center"/>
               <NumericUpDown Value="{Binding PlayFailureRetryCount, Mode=TwoWay}" Minimum="0" Maximum="99" Width="90"/>
-              <TextBlock Text="用于普通单人、校准、协力与组曲；组曲失败会重演完整三首" VerticalAlignment="Center" Opacity="0.75"/>
+              <TextBlock Classes="hint" Text="用于普通单人、校准、协力与组曲；组曲失败会重演完整三首" VerticalAlignment="Center" Opacity="0.75"/>
             </StackPanel>
-            <TextBlock Text="任务启动时最多用 30 秒检测其他程序占用。默认首次警告，再次运行时尝试清理。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="任务启动时最多用 30 秒检测其他程序占用。默认首次警告，再次运行时尝试清理。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding SkipProcessConflictCleanup, Mode=TwoWay}"/>
               <TextBlock Text="跳过其他程序进程占用清理" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="开启后仍执行占用检测；发现占用或检测超时时仅显示通用警告并继续任务，绝不终止其他进程。" TextWrapping="Wrap" Opacity="0.75"/>
-            <TextBlock Text="修改后自动保存。" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="开启后仍执行占用检测；发现占用或检测超时时仅显示通用警告并继续任务，绝不终止其他进程。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="修改后自动保存。" Opacity="0.75"/>
           </StackPanel>
         </TabItem>
         <TabItem Header="Legacy">
           <StackPanel Spacing="14" Margin="0,12,0,0">
-            <TextBlock Text="仅用于 Legacy；Native 始终使用可信谱面。关闭 Native 后可编辑，原选择会保留。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="仅用于 Legacy；Native 始终使用可信谱面。关闭 Native 后可编辑，原选择会保留。" TextWrapping="Wrap" Opacity="0.75"/>
             <DockPanel>
               <ToggleSwitch IsEnabled="{Binding !NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding ChartPredictionEnabled, Mode=TwoWay}"/>
               <TextBlock Text="Legacy 本地谱面辅助" VerticalAlignment="Center"/>
@@ -215,13 +260,13 @@
               <ToggleSwitch IsEnabled="{Binding !NativeRealtimeEnabled}" Classes="Switch" DockPanel.Dock="Right" IsChecked="{Binding ChartPredictPresses, Mode=TwoWay}"/>
               <TextBlock Text="Legacy 谱面主时钟（锁相后派发触控）" VerticalAlignment="Center"/>
             </DockPanel>
-            <TextBlock Text="谱面缺失、初始锁相不可信或连续漂移超限时自动回退视觉演奏；修改其他演出设置不会清除这两个开关。" TextWrapping="Wrap" Opacity="0.75"/>
+            <TextBlock Classes="hint" Text="谱面缺失、初始锁相不可信或连续漂移超限时自动回退视觉演奏；修改其他演出设置不会清除这两个开关。" TextWrapping="Wrap" Opacity="0.75"/>
           </StackPanel>
         </TabItem>
         <TabItem Header="调试目录">
           <StackPanel Spacing="14" Margin="0,12,0,0">
-            <TextBlock Text="调试与结果目录" FontSize="18" FontWeight="DemiBold"/>
-            <TextBlock Text="以下路径由部署脚本生成，不会写入仓库。" Opacity="0.75"/>
+            <TextBlock Classes="group-title" Text="调试与结果目录"/>
+            <TextBlock Classes="hint" Text="以下路径由部署脚本生成，不会写入仓库。" Opacity="0.75"/>
             <ItemsControl ItemsSource="{Binding ArtifactLocations}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="settings:ArtifactLocationItem">
@@ -239,7 +284,7 @@
           </StackPanel>
         </TabItem>
       </TabControl>
-      <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" Opacity="0.8"/>
+      <TextBlock Classes="hint" Text="{Binding StatusText}" TextWrapping="Wrap" Opacity="0.8"/>
     </StackPanel>
   </suki:GlassCard>
 </UserControl>
