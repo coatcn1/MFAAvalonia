@@ -10,6 +10,10 @@ namespace MFAAvalonia.ViewModels.UsersControls.Settings;
 
 public partial class GameSettingsUserControlModel : ViewModelBase
 {
+    [ObservableProperty] private bool _enableFrameworkLogging = MaaFrameworkLoggingPolicy.ReadSavedLogging(ConfigurationManager.Maa);
+    [ObservableProperty] private string _frameworkLoggingStatus = "修改后重启 MFA 生效。";
+    private bool _restoringFrameworkLogging;
+
     [ObservableProperty] private bool _enableRecording = ConfigurationManager.Maa.GetValue(ConfigurationKeys.Recording, false);
 
     [ObservableProperty] private bool _enableSaveDraw = ConfigurationManager.Maa.GetValue(ConfigurationKeys.SaveDraw, false);
@@ -24,6 +28,25 @@ public partial class GameSettingsUserControlModel : ViewModelBase
 
     [ObservableProperty] private bool _continueRunningWhenError = ConfigurationManager.CurrentInstance.GetValue(ConfigurationKeys.ContinueRunningWhenError, true);
 
+    partial void OnEnableFrameworkLoggingChanged(bool value)
+    {
+        if (_restoringFrameworkLogging) return;
+        try
+        {
+            MaaFrameworkLoggingPolicy.SaveLoggingSetting(ConfigurationManager.Maa, value);
+            FrameworkLoggingStatus = "已保存，重启 MFA 后生效。";
+        }
+        catch (System.Exception ex)
+        {
+            try { LoggerHelper.Warning($"MaaFramework 日志设置保存失败：{ex.GetType().Name}"); }
+            catch { /* 状态回滚不能依赖附加日志通道。 */ }
+            _restoringFrameworkLogging = true;
+            try { EnableFrameworkLogging = MaaFrameworkLoggingPolicy.ReadSavedLogging(ConfigurationManager.Maa); }
+            finally { _restoringFrameworkLogging = false; }
+            FrameworkLoggingStatus = "保存失败，已恢复原设置；请查看 MFA 日志。";
+        }
+    }
+
     partial void OnEnableRecordingChanged(bool value)
     {
         ConfigurationManager.Maa.SetValue(ConfigurationKeys.Recording, value);
@@ -35,7 +58,7 @@ public partial class GameSettingsUserControlModel : ViewModelBase
     partial void OnEnableSaveDrawChanged(bool value)
     {
         ConfigurationManager.Maa.SetValue(ConfigurationKeys.SaveDraw, value);
-        MaaProcessor.Global.SetOption_SaveDraw(value);
+        MaaProcessor.Global.SetOption_SaveDraw(MaaFrameworkLoggingPolicy.ShouldSaveDebugFile(value));
         Instances.RootViewModel.IsDebugMode = EnableSaveDraw || EnableRecording || ShowHitDraw || EnableSaveOnError;
         MaaProcessorManager.Instance.Current.SetTasker();
     }
@@ -43,7 +66,7 @@ public partial class GameSettingsUserControlModel : ViewModelBase
     partial void OnEnableSaveOnErrorChanged(bool value)
     {
         ConfigurationManager.Maa.SetValue(ConfigurationKeys.SaveOnError, value);
-        MaaProcessor.Global.SetOption(GlobalOption.SaveOnError, value);
+        MaaProcessor.Global.SetOption(GlobalOption.SaveOnError, MaaFrameworkLoggingPolicy.ShouldSaveDebugFile(value));
         Instances.RootViewModel.IsDebugMode = EnableSaveDraw || EnableRecording || ShowHitDraw || EnableSaveOnError;
         MaaProcessorManager.Instance.Current.SetTasker();
     }

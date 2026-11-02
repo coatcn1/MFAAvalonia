@@ -62,7 +62,7 @@ public class MaaProcessor
     public static string ResourceBase => Path.Combine(Resource, "base");
     private static long _interfaceMetadataGeneration;
     public static ObservableCollection<MaaProcessor> Processors { get; } = new();
-    public static MaaToolkit Toolkit { get; } = new(true);
+    public static MaaToolkit Toolkit { get; } = MaaFrameworkLoggingPolicy.CreateToolkit(AppPaths.DataRoot);
     public static MaaGlobal Global { get; } = new();
     public string InstanceId { get; }
     public InstanceConfiguration InstanceConfiguration { get; }
@@ -1499,6 +1499,7 @@ public class MaaProcessor
 
     private void ConfigureScreenshotTasker(MaaTasker tasker)
     {
+        if (!MaaFrameworkLoggingPolicy.StartupLoggingEnabled) return;
         var logDir = Path.Combine(AppPaths.LogsDirectory, "log_screencap");
         // if (!Directory.Exists(logDir))
         //     Directory.CreateDirectory(logDir);
@@ -1718,8 +1719,10 @@ public class MaaProcessor
             RegisterCustomRecognitionsAndActions(tasker);
             ViewModel?.SetConnected(true);
             //  tasker.Utility.SetOption_Recording(ConfigurationManager.Maa.GetValue(ConfigurationKeys.Recording, false));
-            tasker.Global.SetOption_SaveDraw(ConfigurationManager.Maa.GetValue(ConfigurationKeys.SaveDraw, false));
-            tasker.Global.SetOption(GlobalOption.SaveOnError, ConfigurationManager.Maa.GetValue(ConfigurationKeys.SaveOnError, true));
+            tasker.Global.SetOption_SaveDraw(MaaFrameworkLoggingPolicy.ShouldSaveDebugFile(
+                ConfigurationManager.Maa.GetValue(ConfigurationKeys.SaveDraw, false)));
+            tasker.Global.SetOption(GlobalOption.SaveOnError, MaaFrameworkLoggingPolicy.ShouldSaveDebugFile(
+                ConfigurationManager.Maa.GetValue(ConfigurationKeys.SaveOnError, true)));
             tasker.Global.SetOption_DebugMode(ConfigurationManager.Maa.GetValue(ConfigurationKeys.ShowHitDraw, false));
             LoggerHelper.Info("MaaFW 调试模式：" + ConfigurationManager.Maa.GetValue(ConfigurationKeys.ShowHitDraw, false));
             // 注意：只订阅一次回调，避免嵌套订阅导致内存泄漏

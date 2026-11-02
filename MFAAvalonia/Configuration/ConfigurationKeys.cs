@@ -81,6 +81,7 @@ public static class ConfigurationKeys
 
     public const string Resource = "Resource";
     public const string Recording = "recording";
+    public const string FrameworkLogging = "logging";
     public const string SaveDraw = "save_draw";
     public const string ShowHitDraw = "show_hit_box";
     public const string SaveOnError = "save_on_error";
