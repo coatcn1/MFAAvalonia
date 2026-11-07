@@ -68,7 +68,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private int _nativeRandomGreatLevelStart = 26;
     [ObservableProperty] private decimal _nativeRandomGreatPerLevelPercent = 1m;
     [ObservableProperty] private decimal _nativeRandomGreatMaxPercent = 10m;
-    [ObservableProperty] private int _nativeRandomGreatOffsetMs = 45;
+    [ObservableProperty] private int _nativeRandomGreatOffsetMs = 60;
     [ObservableProperty] private bool _cooperativeJitterEnabled = true;
     [ObservableProperty] private bool _cooperativeMemberLoadingGuardEnabled = true;
     [ObservableProperty] private bool _bestdoriAutoUpdateEnabled = true;
@@ -353,7 +353,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         var start = (int)Read(runtime, "native_random_great_level_start", 26, 1, 40, true);
         var increment = Read(runtime, "native_random_great_per_level_percent", 1m, 0, 20);
         var maximum = Read(runtime, "native_random_great_max_percent", 10m, 0, 20);
-        var offset = (int)Read(runtime, "native_random_great_offset_ms", 45, 35, 60, true);
+        var offset = (int)Read(runtime, "native_random_great_offset_ms", 60, 35, 60, true);
         // 全组校验成功才替换；读取失败保留已有选择，禁止默认值覆盖用户配置。
         NativeRandomGreatEnabled = enabled;
         NativeRandomGreatBasePercent = basis;
