@@ -658,8 +658,10 @@ static void RandomGreatOptionsRoundtripValidateAndPreserveAutoSaveBoundary()
     load.Invoke(model, [new JObject()]);
     Assert(!model.NativeRandomGreatEnabled && model.NativeRandomGreatBasePercent == 2m
         && model.NativeRandomGreatLevelStart == 26 && model.NativeRandomGreatPerLevelPercent == 1m
-        && model.NativeRandomGreatMaxPercent == 10m && model.NativeRandomGreatOffsetMs == 45,
+        && model.NativeRandomGreatMaxPercent == 10m && model.NativeRandomGreatOffsetMs == 60,
         "old settings must default random GREAT off with documented numeric values");
+    load.Invoke(model, [new JObject { ["native_random_great_offset_ms"] = 45 }]);
+    Assert(model.NativeRandomGreatOffsetMs == 45, "explicit legacy random GREAT offset must remain unchanged");
     var options = new JObject { ["native_random_great_enabled"] = true, ["native_random_great_base_percent"] = 3.5m,
         ["native_random_great_level_start"] = 25, ["native_random_great_per_level_percent"] = .5m,
         ["native_random_great_max_percent"] = 7m, ["native_random_great_offset_ms"] = 50 };
