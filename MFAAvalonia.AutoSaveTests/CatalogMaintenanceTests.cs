@@ -14,7 +14,7 @@ static class CatalogMaintenanceTests
         await SchedulingAsync();
         await RealChildShutdownAsync();
         AutoOptions();
-        CacheFixtures();
+        await CacheFixturesAsync();
         Console.WriteLine("Catalog scheduling, maintenance leases and isolated cache cleanup tests passed");
     }
 
@@ -242,7 +242,7 @@ static class CatalogMaintenanceTests
         }
     }
 
-    private static void CacheFixtures()
+    private static async Task CacheFixturesAsync()
     {
         var root = Environment.GetEnvironmentVariable("MAABANGDREAM_TEST_ROOT")
                    ?? Path.Combine(AppContext.BaseDirectory, "fixtures", Guid.NewGuid().ToString("N"));
@@ -251,14 +251,22 @@ static class CatalogMaintenanceTests
         var source = Path.Combine(root, "source");
         var debug = Path.Combine(data, "debug");
         Directory.CreateDirectory(Path.Combine(debug, "nested"));
+        Directory.CreateDirectory(Path.Combine(debug, "retained"));
+        Directory.CreateDirectory(Path.Combine(data, "config"));
         Directory.CreateDirectory(Path.Combine(data, "profiles"));
+        Directory.CreateDirectory(Path.Combine(data, "resource", "charts"));
         Directory.CreateDirectory(Path.Combine(source, "debug", "recordings"));
-        var profile = Path.Combine(data, "profiles", "keep.json");
-        File.WriteAllText(profile, "preserve");
+        var protectedFiles = new[]
+        {
+            Path.Combine(data, "config", "keep.json"),
+            Path.Combine(data, "profiles", "keep.json"),
+            Path.Combine(data, "resource", "charts", "keep.json")
+        };
+        foreach (var file in protectedFiles) File.WriteAllText(file, "preserve");
         File.WriteAllText(Path.Combine(debug, "ordinary.txt"), "123");
         File.WriteAllText(Path.Combine(debug, "nested", "ordinary.txt"), "12345");
         File.WriteAllText(Path.Combine(source, "debug", "recordings", "recording.json"), "1234");
-        var locked = Path.Combine(debug, "locked.log");
+        var locked = Path.Combine(debug, "retained", "locked.log");
         File.WriteAllText(locked, "locked");
         using var held = new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         var paths = new JObject { ["realtime_recordings"] = Path.Combine(source, "debug", "recordings"),
@@ -266,16 +274,75 @@ static class CatalogMaintenanceTests
         var planned = CacheMaintenance.Plan(data, paths);
         Assert(!planned.Contains(Path.Combine(source, "debug", "recordings")), "parent/child was not deduplicated");
         var gate = new TaskMaintenanceCoordinator();
-        var result = CacheMaintenance.Clean(data, paths, gate, () => false);
+        var callerThread = Environment.CurrentManagedThreadId;
+        var loadStarted = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loadPaths = new TaskCompletionSource<JObject?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queuedCheckThread = 0;
+        var cleanup = CacheMaintenance.CleanAsync(data, () =>
+        {
+            loadStarted.SetResult(Environment.CurrentManagedThreadId);
+            return loadPaths.Task;
+        }, gate, () => { queuedCheckThread = Environment.CurrentManagedThreadId; return false; });
+        using var waitingCancellation = new CancellationTokenSource();
+        Task<IDisposable>? waiting = null;
+        try
+        {
+            Assert(queuedCheckThread == callerThread, "queue was checked outside the calling thread");
+            // 在调用线程仍被占用时比较线程号，避免线程池把同一线程分配给后续工作。
+            Assert(loadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult() != callerThread,
+                "cleanup loaded sidecar on the calling thread");
+            Assert(gate.IsBusy && !cleanup.IsCompleted, "sidecar loading did not retain the maintenance lease");
+            Assert(gate.TryBeginMaintenance(() => false) == null, "another maintenance overlapped cleanup");
+            waiting = gate.BeginTaskAsync(waitingCancellation.Token);
+            Assert(!waiting.IsCompleted, "task entered during cleanup");
+        }
+        finally
+        {
+            loadPaths.TrySetResult(paths);
+        }
+        var result = await cleanup.WaitAsync(TimeSpan.FromSeconds(5));
+        using (await waiting!.WaitAsync(TimeSpan.FromSeconds(5))) { }
+        Assert(!gate.IsBusy, "async cleanup or resumed task leaked its lease");
         Assert(result.DeletedFiles == 3 && result.DeletedBytes == 12, "deletion count/bytes are not truthful");
         Assert(result.Failures.Count == 1 && result.Failures[0].Path == locked, "locked file failure was hidden");
-        Assert(File.Exists(locked) && File.ReadAllText(profile) == "preserve", "locked/profile file damaged");
+        Assert(File.Exists(locked) && protectedFiles.All(file => File.ReadAllText(file) == "preserve"),
+            "locked file or protected data damaged");
+        Assert(Directory.Exists(debug) && Directory.Exists(Path.Combine(source, "debug"))
+            && !Directory.Exists(Path.Combine(debug, "nested")) && !Directory.Exists(Path.Combine(source, "debug", "recordings")),
+            "cleanup did not preserve the roots and remove empty subdirectories");
         Assert(result.Describe().Contains("未清理"), "partial cleanup falsely reported success");
         var empty = CacheMaintenance.Clean(Path.Combine(root, "empty"), null, gate, () => false);
         Assert(empty.DeletedFiles == 0 && empty.Describe().Contains("没有可清理"), "empty cleanup falsely reported deletion");
-        using var maintenance = gate.TryBeginMaintenance(() => false)!;
-        try { CacheMaintenance.Clean(data, null, gate, () => false); throw new Exception("sync did not block cache"); }
+        using (gate.TryBeginMaintenance(() => false)!)
+        {
+            try { CacheMaintenance.Clean(data, null, gate, () => false); throw new Exception("sync did not block cache"); }
+            catch (InvalidOperationException) { }
+        }
+        try
+        {
+            await CacheMaintenance.CleanAsync(data, () => throw new Exception("queued cleanup read sidecar"),
+                gate, () => true);
+            throw new Exception("queued task did not block cache");
+        }
         catch (InvalidOperationException) { }
+        try
+        {
+            await CacheMaintenance.CleanAsync(data, () => Task.FromException<JObject?>(new IOException("sidecar unreadable")),
+                gate, () => false);
+            throw new Exception("sidecar failure was hidden");
+        }
+        catch (IOException ex) when (ex.Message == "sidecar unreadable") { }
+        Assert(!gate.IsBusy, "sidecar failure leaked maintenance lease");
+        var deepRoot = Path.Combine(root, "deep");
+        var deepDebug = Path.Combine(deepRoot, "debug");
+        var leaf = deepDebug;
+        for (var i = 0; i < 160; i++) leaf = Path.Combine(leaf, "x");
+        Directory.CreateDirectory(leaf);
+        File.WriteAllText(Path.Combine(leaf, "last.txt"), "deep");
+        var deep = await CacheMaintenance.CleanAsync(deepRoot, () => Task.FromResult<JObject?>(null), gate, () => false);
+        Assert(deep.DeletedFiles == 1 && deep.DeletedBytes == 4 && deep.Failures.Count == 0
+            && Directory.Exists(deepDebug) && !Directory.EnumerateFileSystemEntries(deepDebug).Any(),
+            "deep cleanup failed or removed the root");
         foreach (var target in new[] { Path.GetPathRoot(root)!, source, Path.Combine(data, "profiles", "debug"),
                      Path.Combine(data, "config", "debug"), Path.Combine(data, "charts", "debug"),
                      Path.Combine(data, "debug", "..", "debug") })
@@ -283,14 +350,18 @@ static class CatalogMaintenanceTests
             try { CacheMaintenance.Plan(data, new JObject { ["maafw_debug"] = target }); throw new Exception("unsafe target accepted"); }
             catch (InvalidDataException) { }
         }
-        Assert(File.ReadAllText(profile) == "preserve", "unsafe planner touched files");
+        Assert(protectedFiles.All(file => File.ReadAllText(file) == "preserve"), "unsafe planner touched files");
         if (OperatingSystem.IsWindows())
         {
             var outside = Path.Combine(root, "outside-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Path.Combine(outside, "debug"));
             var protectedFile = Path.Combine(outside, "debug", "keep.txt");
             File.WriteAllText(protectedFile, "must survive");
-            var link = Path.Combine(root, "link-" + Guid.NewGuid().ToString("N"));
+            var linkRoot = Path.Combine(root, "linked");
+            var linkCache = Path.Combine(linkRoot, "debug");
+            Directory.CreateDirectory(linkCache);
+            File.WriteAllText(Path.Combine(linkCache, "local.txt"), "local");
+            var link = Path.Combine(linkCache, "junction");
             var info = new System.Diagnostics.ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true };
             foreach (var arg in new[] { "/c", "mklink", "/J", link, outside }) info.ArgumentList.Add(arg);
             using var process = System.Diagnostics.Process.Start(info)!;
@@ -298,7 +369,12 @@ static class CatalogMaintenanceTests
             Assert(process.ExitCode == 0, "isolated junction fixture creation failed");
             try { CacheMaintenance.Plan(data, new JObject { ["maafw_debug"] = Path.Combine(link, "debug") }); throw new Exception("linked ancestor was accepted"); }
             catch (IOException) { }
-            Assert(File.ReadAllText(protectedFile) == "must survive", "junction planner deleted outside file");
+            var linked = await CacheMaintenance.CleanAsync(linkRoot, () => Task.FromResult<JObject?>(null), gate, () => false);
+            Assert(linked.DeletedFiles == 1 && linked.DeletedBytes == 5 && linked.Failures.Count == 1
+                && linked.Failures[0].Path == link, "junction was followed or its refusal was hidden");
+            Assert(Directory.Exists(link) && File.ReadAllText(protectedFile) == "must survive",
+                "cleanup deleted the junction or its target");
+            Directory.Delete(link);
         }
     }
 }
