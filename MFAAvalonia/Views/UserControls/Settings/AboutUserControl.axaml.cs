@@ -18,6 +18,8 @@ namespace MFAAvalonia.Views.UserControls.Settings;
 
 public partial class AboutUserControl : UserControl
 {
+    private bool _clearingCache;
+
     public AboutUserControl()
     {
         InitializeComponent();
@@ -53,24 +55,43 @@ public partial class AboutUserControl : UserControl
     
     private async void ClearCache_Click(object? sender, RoutedEventArgs e)
     {
+        if (_clearingCache) return;
+        _clearingCache = true;
+        var button = sender as Button;
+        var window = TopLevel.GetTopLevel(this) as Window;
+        var windowClosed = false;
+        if (window != null) window.Closed += OnWindowClosed;
         try
         {
-            var artifacts = await ViewModels.UsersControls.Settings.ProfileManagerClient.LoadCacheArtifactPathsAsync();
+            if (button != null) button.IsEnabled = false;
+            LoggerHelper.Info("开始清理缓存");
             // 不终止其他实例，也不强制释放外部文件锁；任务与维护共用同一门禁。
-            var result = CacheMaintenance.Clean(AppPaths.DataRoot, artifacts,
-                TaskMaintenanceCoordinator.Shared, () => TaskMaintenanceCoordinator.CheckQueuedTasks(() => MaaProcessor.Processors.Any(p => p.TaskQueue.Count > 0)));
+            var result = await CacheMaintenance.CleanAsync(AppPaths.DataRoot,
+                ViewModels.UsersControls.Settings.ProfileManagerClient.LoadCacheArtifactPathsAsync,
+                TaskMaintenanceCoordinator.Shared,
+                () => TaskMaintenanceCoordinator.CheckQueuedTasks(() => MaaProcessor.Processors.Any(p => p.TaskQueue.Count > 0)));
             foreach (var failure in result.Failures)
                 LoggerHelper.Warning($"缓存未清理：{failure.Path}，{failure.Reason}");
-            LoggerHelper.Info($"清理缓存：{result.Describe()}");
+            var description = result.Describe();
+            LoggerHelper.Info($"清理缓存：{description}");
+            if (windowClosed) return;
             if (result.Failures.Count > 0 || result.DeletedFiles == 0)
-                ToastHelper.Warn("缓存清理结果", result.Describe());
-            else ToastHelper.Success(result.Describe());
+                ToastHelper.Warn("缓存清理结果", description);
+            else ToastHelper.Success(description);
         }
         catch (Exception ex)
         {
-            LoggerHelper.Error($"清理缓存失败: {ex.Message}");
-            ToastHelper.Error(LangKeys.ClearCacheFailed.ToLocalization(), ex.Message);
+            LoggerHelper.Error("清理缓存失败", ex);
+            if (!windowClosed) ToastHelper.Error(LangKeys.ClearCacheFailed.ToLocalization(), ex.Message);
         }
+        finally
+        {
+            if (window != null) window.Closed -= OnWindowClosed;
+            if (button != null && !windowClosed) button.IsEnabled = true;
+            _clearingCache = false;
+        }
+
+        void OnWindowClosed(object? sender, EventArgs args) => windowClosed = true;
     }
     
     private void ShowLicense_Click(object? sender, RoutedEventArgs e)
