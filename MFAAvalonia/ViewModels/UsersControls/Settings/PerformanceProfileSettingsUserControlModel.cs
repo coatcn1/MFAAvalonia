@@ -61,6 +61,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     [ObservableProperty] private bool _chartPredictPresses = true;
     [ObservableProperty] private bool _nativeRealtimeEnabled;
     [ObservableProperty] private bool _nativeLifeFeedbackEnabled;
+    [ObservableProperty] private int _nativeLifeFeedbackInitialStepMs = 45;
     [ObservableProperty] private bool _nativeWaitJitterFilterEnabled;
     [ObservableProperty] private bool _nativeRandomGreatEnabled;
     [ObservableProperty] private decimal _nativeRandomGreatBasePercent = 2m;
@@ -127,6 +128,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
     partial void OnChartPredictPressesChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRealtimeEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeLifeFeedbackEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
+    partial void OnNativeLifeFeedbackInitialStepMsChanged(int value) => ScheduleRuntimeAutoSave();
     partial void OnNativeWaitJitterFilterEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRandomGreatEnabledChanged(bool value) => ScheduleRuntimeAutoSave();
     partial void OnNativeRandomGreatBasePercentChanged(decimal value) => ScheduleRuntimeAutoSave();
@@ -260,6 +262,7 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         ["chart_predict_presses"] = ChartPredictPresses,
         ["native_realtime_enabled"] = NativeRealtimeEnabled,
         ["native_life_feedback_enabled"] = NativeLifeFeedbackEnabled,
+        ["native_life_feedback_initial_step_ms"] = ValidateNativeLifeFeedbackInitialStep(NativeLifeFeedbackInitialStepMs),
         ["native_wait_jitter_filter_enabled"] = NativeWaitJitterFilterEnabled,
         ["native_random_great_enabled"] = NativeRandomGreatEnabled,
         ["native_random_great_base_percent"] = ValidateRandomGreatNumber(NativeRandomGreatBasePercent, 0, 20, "native_random_great_base_percent"),
@@ -306,6 +309,13 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         LiveBoostTarget = target;
     }
 
+    private static int ValidateNativeLifeFeedbackInitialStep(int value)
+    {
+        if (value is < 30 or > 45)
+            throw new InvalidDataException("native_life_feedback_initial_step_ms 必须是 30..45 的整数");
+        return value;
+    }
+
     private void LoadNativeExperimentalOptions(JObject? runtime)
     {
         static bool Read(JObject? source, string key)
@@ -318,7 +328,15 @@ public sealed partial class PerformanceProfileSettingsUserControlModel : ViewMod
         // 先校验整个实验选项组，失败时不能留下半组新值供自动保存。
         var life = Read(runtime, "native_life_feedback_enabled");
         var wait = Read(runtime, "native_wait_jitter_filter_enabled");
+        var stepToken = runtime?["native_life_feedback_initial_step_ms"];
+        if (stepToken != null && stepToken.Type != JTokenType.Integer)
+            throw new InvalidDataException("native_life_feedback_initial_step_ms 必须是 30..45 的整数");
+        int step;
+        try { step = ValidateNativeLifeFeedbackInitialStep(stepToken?.Value<int>() ?? 45); }
+        catch (OverflowException ex)
+        { throw new InvalidDataException("native_life_feedback_initial_step_ms 必须是 30..45 的整数", ex); }
         NativeLifeFeedbackEnabled = life;
+        NativeLifeFeedbackInitialStepMs = step;
         NativeWaitJitterFilterEnabled = wait;
     }
 

@@ -652,6 +652,55 @@ static void NativeExperimentalOptionsKeepBooleanAndSaveBoundaries()
         .GetValue(model)!).Cancel();
 }
 
+static void NativeFeedbackInitialStepValidatesAndAutoSaves()
+{
+    var type = typeof(PerformanceProfileSettingsUserControlModel);
+    var model = new PerformanceProfileSettingsUserControlModel();
+    var load = type.GetMethod("LoadNativeExperimentalOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var capture = type.GetMethod("CaptureRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var loaded = type.GetField("_runtimeOptionsLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var pending = type.GetField("_pendingRuntimeOptions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var autoSave = (DebouncedAsyncAction)type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(model)!;
+    load.Invoke(model, [new JObject()]);
+    Assert(model.NativeLifeFeedbackInitialStepMs == 45, "old settings must default initial step to 45 ms");
+    foreach (var step in new[] { 30, 37, 45 })
+    {
+        load.Invoke(model, [new JObject { ["native_life_feedback_enabled"] = true,
+            ["native_life_feedback_initial_step_ms"] = step }]);
+        var snapshot = (JObject)capture.Invoke(model, null)!;
+        Assert(snapshot.Value<int>("native_life_feedback_initial_step_ms") == step,
+            "initial step was not captured as an integer");
+        var reloaded = new PerformanceProfileSettingsUserControlModel();
+        load.Invoke(reloaded, [snapshot]);
+        Assert(reloaded.NativeLifeFeedbackInitialStepMs == step && reloaded.NativeLifeFeedbackEnabled,
+            "initial step save/reload lost a value");
+    }
+    Assert(pending.GetValue(model) == null, "unloaded initial step edits must not auto-save defaults");
+    foreach (var bad in new JToken[] { new JValue(true), new JValue("37"), new JValue(37.0), new JValue(29),
+        new JValue(46), new JValue(long.MaxValue), JValue.CreateNull(), new JObject() })
+    {
+        try
+        {
+            load.Invoke(model, [new JObject { ["native_life_feedback_enabled"] = false,
+                ["native_life_feedback_initial_step_ms"] = bad }]);
+            throw new InvalidOperationException("invalid initial step accepted: " + bad);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { }
+        Assert(model.NativeLifeFeedbackEnabled && model.NativeLifeFeedbackInitialStepMs == 45,
+            "invalid initial step partially replaced the saved group");
+    }
+    loaded.SetValue(model, true);
+    model.NativeLifeFeedbackInitialStepMs = 37;
+    var saved = (JObject)pending.GetValue(model)!;
+    Assert(saved.Value<int>("native_life_feedback_initial_step_ms") == 37,
+        "initial step edit did not schedule runtime auto-save");
+    model.NativeRealtimeEnabled = false;
+    model.NativeLifeFeedbackEnabled = false;
+    Assert(((JObject)pending.GetValue(model)!).Value<int>("native_life_feedback_initial_step_ms") == 37,
+        "disabled Native or feedback lost the preferred initial step");
+    autoSave.Cancel();
+}
+
 static void RandomGreatOptionsRoundtripValidateAndPreserveAutoSaveBoundary()
 {
     var type = typeof(PerformanceProfileSettingsUserControlModel);
@@ -667,7 +716,8 @@ static void RandomGreatOptionsRoundtripValidateAndPreserveAutoSaveBoundary()
         "old settings must default random GREAT off with documented numeric values");
     load.Invoke(model, [new JObject { ["native_random_great_offset_ms"] = 45 }]);
     Assert(model.NativeRandomGreatOffsetMs == 45, "explicit legacy random GREAT offset must remain unchanged");
-    var options = new JObject { ["native_random_great_enabled"] = true, ["native_random_great_base_percent"] = 3.5m,
+    var options = new JObject { ["native_random_great_enabled"] = true,
+        ["native_random_great_base_percent"] = 3.5m,
         ["native_random_great_level_start"] = 25, ["native_random_great_per_level_percent"] = .5m,
         ["native_random_great_max_percent"] = 7m, ["native_random_great_offset_ms"] = 50 };
     load.Invoke(model, [options]);
@@ -710,6 +760,17 @@ static void RandomGreatOptionsRoundtripValidateAndPreserveAutoSaveBoundary()
     model.NativeRandomGreatOffsetMs = 55;
     Assert(((JObject)pending.GetValue(model)!).Value<int>("native_random_great_offset_ms") == 55,
         "random GREAT numeric edit did not schedule a full runtime save");
+    foreach (var obsolete in new JToken[] { new JValue(true), new JValue(false), new JValue("broken"), new JValue(1), new JObject(), JValue.CreateNull() })
+    {
+        var legacy = (JObject)options.DeepClone();
+        legacy["native_random_great_feedback_guard_enabled"] = obsolete;
+        load.Invoke(model, [legacy]);
+        var migrated = (JObject)capture.Invoke(model, null)!;
+        Assert(migrated["native_random_great_feedback_guard_enabled"] == null,
+            "obsolete feedback guard must be ignored and absent from new snapshots");
+        Assert(model.NativeRandomGreatEnabled && model.NativeRandomGreatOffsetMs == 50,
+            "obsolete feedback guard damaged valid random GREAT options");
+    }
     ((DebouncedAsyncAction)type.GetField("_runtimeAutoSave", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(model)!).Cancel();
 }
 
@@ -932,6 +993,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         models.Add(model);
         await Task.WhenAll(model.EnsureLoadedAsync(), model.EnsureLoadedAsync());
         Assert(model.CooperativeMemberLoadingGuardEnabled && model.LiveBoostSettingsEnabled, "old selection did not load enabled defaults");
+        Assert(model.NativeLifeFeedbackInitialStepMs == 45, "old selection did not default initial step to 45 ms");
         Assert(model.BestdoriAutoUpdateEnabled && model.BestdoriAutoUpdateIntervalHours == 24,
             "old selection did not migrate auto update defaults");
         Assert(await File.ReadAllTextAsync(selectionPath) == oldSelection, "refresh auto-saved defaults");
@@ -939,6 +1001,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         model.LiveBoostSettingsEnabled = false;
         model.CooperativeMemberLoadingGuardEnabled = false;
         model.NativeLifeFeedbackEnabled = true;
+        model.NativeLifeFeedbackInitialStepMs = 37;
         model.NativeWaitJitterFilterEnabled = true;
         model.NativeRandomGreatEnabled = true;
         model.NativeRandomGreatBasePercent = 3.5m;
@@ -965,6 +1028,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         Assert(!reloaded.NativeRealtimeEnabled, "guard must be independent of native input switch");
         Assert(reloaded.NativeLifeFeedbackEnabled && reloaded.NativeWaitJitterFilterEnabled,
             "experimental Native settings did not persist through real manager");
+        Assert(reloaded.NativeLifeFeedbackInitialStepMs == 37, "initial step did not persist through real manager auto-save/reload");
         Assert(reloaded.NativeRandomGreatEnabled && reloaded.NativeRandomGreatBasePercent == 3.5m
             && reloaded.NativeRandomGreatLevelStart == 25 && reloaded.NativeRandomGreatPerLevelPercent == .5m
             && reloaded.NativeRandomGreatMaxPercent == 7m && reloaded.NativeRandomGreatOffsetMs == 50,
@@ -1016,6 +1080,7 @@ static async Task CooperativeLoadingGuardPersistsThroughProfileManagerAsync()
         reloaded.BestdoriAutoUpdateIntervalHours = 1;
         reloaded.SkipResultCheck = false;
         reloaded.NativeLifeFeedbackEnabled = false;
+        reloaded.NativeLifeFeedbackInitialStepMs = 45;
         reloaded.NativeWaitJitterFilterEnabled = false;
         reloaded.NativeRandomGreatEnabled = false;
         reloaded.NativeRandomGreatBasePercent = 2m;
@@ -1730,6 +1795,7 @@ await RefreshRetryDoesNotDuplicatePendingSaveAsync();
 RuntimeOptionsIncludeProcessCleanupSwitch();
 LiveBoostTargetPreservesDefaultsZeroAndAutoSaveBoundary();
 NativeExperimentalOptionsKeepBooleanAndSaveBoundaries();
+NativeFeedbackInitialStepValidatesAndAutoSaves();
 RandomGreatOptionsRoundtripValidateAndPreserveAutoSaveBoundary();
 CooperativeLoadingGuardIsVisibleAndPreservesAutoSaveBoundary();
 await ProfileManagerPipeUsesUtf8IndependentlyOfConsoleAsync();
